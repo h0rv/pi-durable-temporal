@@ -1,0 +1,11 @@
+{"version":2,"width":110,"height":30,"timestamp":1791398067,"title":"Pi Durable on Temporal"}
+[5.942,"o","Pi Durable coding agent on Temporal. Provider: codex/gpt-6-luna\r\n"]
+[6.23,"o","Trace and approval: http://localhost:8001/?s=pi-coding-2ebe24df-dc1a-408f-b279-e7cd3efcc93a\r\n"]
+[15.54,"o","Generated code:\nexport function total(items) { return items.reduce((sum, item) => sum + item.price * item.quantity, 0); }\n\r\n"]
+[15.54,"o","Tests passed after an injected test runner outage. Publication is waiting for human approval.\r\n"]
+[15.574,"o","Sent a simulated human approval through the console API.\r\n"]
+[15.614,"o","Killed the worker after the file was published, before activity completion.\r\n"]
+[17.168,"o","Started a replacement worker on the same Temporal task queue.\r\n"]
+[32.631,"o","Completed. 4 recorded model calls were reused. One final model call ran after recovery. The file was published once.\r\n"]
+[32.631,"o","Recording: .local/coding-demo.cast\r\n"]
+[32.631,"o","The console and replacement worker remain running. Press Ctrl+C to stop them.\r\n"]

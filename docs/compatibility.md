@@ -1,0 +1,37 @@
+# Compatibility
+
+The adapter uses Pi's `Harness` directly. It does not replace Pi's task scheduler, tools or hook system. Install extensions in the registry you pass to `openTemporalHarness` or `openTemporalSession`.
+
+## Workflow code
+
+Pi's conversation APIs remain available through the returned harness. This includes submissions, steering, forks, documents and custom tasks. Pi's generation and tool hooks also run there. All of that code must obey Temporal's replay rules. Use activities for external work.
+
+A tool that needs `api.commit`, conversations or child tasks should stay in the workflow. Wrap only its external operations in activities. `createToolActivities` is for tools that use an execution environment. It cannot transfer a live Pi session into an activity.
+
+Pi turns a thrown tool error into a tool result for the model. It also supports blocked tools, rewritten results and termination requests. The adapter returns activity results to that same Pi tool path. Exhausted model retries return the original provider error response to Pi for classification.
+
+Temporal model activities use three attempts by default. The helper disables Pi's separate retry loop. If you want Pi's retry hooks and attempt usage accounting, set the model activity to one attempt and enable Pi retries in `settings.retry`. With Temporal retries, Pi sees only the final attempt's response and usage.
+
+## Progress
+
+Pass `{ stream: true }` as the third argument to `createTemporalModels` or `temporalTool` to receive progress signals. `onProgress` receives the activity attempt number. Partial output is provisional. A retried activity starts reporting again, and the final activity result is authoritative.
+
+Progress signals add events and payloads to workflow history. Default model calls return a completed response without those signals. Deferred model requests use `piFetchDeferred` and `piCancelDeferred` activities.
+
+## Clients
+
+The example console supports multiple browser connections to a session. Turns are queued and the trace can be read after reconnecting.
+
+Pi has an experimental native client/server implementation with multiple presentation attachments. Its coding-agent client and server are source-only and excluded from released npm packages and standalone binaries. The installed Pi 1.0.4 TUI cannot connect directly to this Temporal integration.
+
+The released Pi extension API works without that experimental server. Load this repo's [TUI extension](tui.md) to send prompts through the console API. It uses the official Agent Harness client for reconnects and approvals, with Pi's native message styling and dialogs.
+
+## Deployment
+
+Local recovery and replay are tested. Remote connection settings are tested, but a Temporal Cloud deployment has not been run.
+
+Model credentials and MCP connections stay on the worker. Files accessed by tools need shared persistent storage when activities can move between workers. `NodeExecutionEnv` is a local process environment, not a security sandbox.
+
+The model adapter handles chat generation. Image generation and classifier APIs need their own worker activities. Provider callbacks such as `onPayload` and `onResponse` cannot cross a Temporal payload boundary. Configure those on the worker.
+
+Use one model transport per workflow and share it between conversations. Use one progress-enabled tool adapter per tool name. Each adapter owns its signal handler.
