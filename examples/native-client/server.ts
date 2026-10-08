@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRemoteServiceEndpoint, RemoteServiceProvider, replicatedState } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
@@ -8,7 +9,8 @@ import type { AgentChange, AgentState, ConversationView } from "@earendil-works/
 import type { RoutedSessionHandle, ServerHost } from "@earendil-works/pi-server";
 import { SessionNotFoundError } from "@earendil-works/pi-server";
 import { createUnixServer, getUnixSocketPath } from "@earendil-works/pi-server/unix";
-import { Client, Connection } from "@temporalio/client";
+import { Client, Connection, WorkflowUpdateFailedError } from "@temporalio/client";
+import { ApplicationFailure } from "@temporalio/common";
 import { getAgentDir } from "../../.local/pi-upstream/packages/coding-agent/src/config.ts";
 import { loadProjectContextFiles } from "../../.local/pi-upstream/packages/coding-agent/src/core/resource-loader.ts";
 import { SettingsManager } from "../../.local/pi-upstream/packages/coding-agent/src/core/settings-manager.ts";
@@ -62,6 +64,8 @@ const services = await createExperimentalServerServices({
 				{
 					model,
 					cwd,
+					maxTurnsPerRun: Number(process.env.PI_SESSION_TURNS_PER_RUN ?? 20),
+					retainTraceTurns: Number(process.env.PI_TRACE_RETAIN_TURNS ?? 20),
 					settings: JSON.parse(JSON.stringify(createHarnessSettings(piSettings))),
 					agent: {
 						thinkingLevel: piSettings.getDefaultThinkingLevel(),
@@ -106,6 +110,24 @@ const host: ServerHost = {
 	},
 	async openSession({ id }): Promise<RoutedSessionHandle> {
 		const handle = client.workflow.getHandle(id);
+		const update = async <T>(name: string, args: [] | [unknown] = []): Promise<T> => {
+			for (let attempt = 0; ; attempt++) {
+				try {
+					return await (args.length
+						? handle.executeUpdate<T, [unknown]>(name, { args })
+						: handle.executeUpdate<T, []>(name));
+				} catch (error) {
+					if (
+						attempt >= 100 ||
+						!(error instanceof WorkflowUpdateFailedError) ||
+						!(error.cause instanceof ApplicationFailure) ||
+						error.cause.type !== "SessionRollingOver"
+					)
+						throw error;
+					await delay(100);
+				}
+			}
+		};
 		const view = replicatedState(await handle.query<ConversationView>("piTranscript"));
 		const models = replicatedState<ModelsState>({
 			catalog: {
@@ -125,16 +147,15 @@ const host: ServerHost = {
 		]);
 		provider.provide(Transcript, { state: view });
 		provider.provide(AgentController, {
-			prompt: (request) => handle.executeUpdate("piController.prompt", { args: [request] }),
-			steer: (request) => handle.executeUpdate("piController.steer", { args: [request] }),
-			followUp: (request) => handle.executeUpdate("piController.followUp", { args: [request] }),
-			cancelQueued: (entryId) => handle.executeUpdate("piController.cancelQueued", { args: [entryId] }),
-			abort: () => handle.executeUpdate("piController.abort"),
-			compact: (request) => handle.executeUpdate("piController.compact", { args: [request] }),
-			waitForPrompt: (operationId) => handle.executeUpdate("piController.waitForPrompt", { args: [operationId] }),
+			prompt: (request) => update("piController.prompt", [request]),
+			steer: (request) => update("piController.steer", [request]),
+			followUp: (request) => update("piController.followUp", [request]),
+			cancelQueued: (entryId) => update("piController.cancelQueued", [entryId]),
+			abort: () => update("piController.abort"),
+			compact: (request) => update("piController.compact", [request]),
+			waitForPrompt: (operationId) => update("piController.waitForPrompt", [operationId]),
 		});
-		const configure = (change: AgentChange) =>
-			handle.executeUpdate<void, [AgentChange]>("piConfigure", { args: [change] });
+		const configure = (change: AgentChange) => update<void>("piConfigure", [change]);
 		provider.provide(Models, {
 			state: models,
 			async cycleThinking() {

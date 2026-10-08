@@ -116,6 +116,8 @@ export function createConsole(
 			return;
 		}
 		const stream = WorkflowStreamClient.create(client, id);
+		const retained = await client.workflow.getHandle(id).query(traceSnapshot);
+		offset = Math.max(offset, retained.base_offset);
 		const abort = new AbortController();
 		response.on("close", () => abort.abort());
 		response.writeHead(200, {

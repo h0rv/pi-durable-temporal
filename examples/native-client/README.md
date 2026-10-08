@@ -33,9 +33,17 @@ To view model calls, tools and Pi's usage state in the community Agent Harness c
 npm run example:console
 ```
 
-Open `http://localhost:8000/?s=SESSION_ID`. Native sessions are read-only in this console. Send prompts through the Pi client. Trace events are retained in workflow memory and rebuilt by replay; long sessions need retention limits as well as a workflow history limit.
+Open `http://localhost:8000/?s=SESSION_ID`. Native sessions are read-only in this console. Send prompts through the Pi client.
 
-This example exposes one configured model and no session plugin loading or reload. It uses a local Unix socket and polls the native transcript every 100 ms. It has no Continue-as-New, so long sessions need a workflow history limit. The client does not automatically repeat prompts after a disconnect.
+Sessions continue as new after 20 turns, or when Temporal recommends it. The session ID stays the same. Rollover waits for Pi to finish its work and drain its queue. Set `PI_SESSION_TURNS_PER_RUN` on the server to change the turn limit.
+
+Sessions started before this change keep their previous behavior for replay compatibility. After updating the worker, send Temporal's `piContinueSession` signal once to move an existing session to the new behavior. It waits for the same idle boundary.
+
+The console retains the last 20 completed turns. Set `PI_TRACE_RETAIN_TURNS` on the server to change that limit, or `0` to discard completed traces. Older trace events are removed from the current stream. Earlier Temporal runs remain available until the namespace's history retention expires.
+
+Pi's complete checkpoint is preserved through the existing session adapter. Pi has no public API for pruning its stored conversation, task or submission records. Compaction reduces model context; it does not shrink that archive. Checkpoints still grow. Use external payload storage on every client and worker, and retain those payloads while any workflow history references them.
+
+This example exposes one configured model and no session plugin loading or reload. It uses a local Unix socket and polls the native transcript every 100 ms. A single busy turn can still reach Temporal's history limits before an idle rollover. The client does not automatically repeat prompts after a disconnect.
 
 Use the existing [Temporal connection settings](../../docs/configuration.md) for the worker and server. The client talks to the local bridge, which can connect to remote Temporal. A remote deployment has not been tested.
 
@@ -45,4 +53,4 @@ npx vitest run test/native-client.test.ts
 PI_WORKSPACE_DIRECTORY=/path/to/workspace npm run example:client:test
 ```
 
-The last command needs the worker and server running. It uses two upstream clients to submit a task, read the result and compare their transcripts. It checks the file written by the agent.
+The last command needs the worker and server running. It uses two upstream clients to submit a task, read the result and compare their transcripts across Continue-as-New. It checks the file written by the agent.

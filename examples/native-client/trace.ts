@@ -2,14 +2,17 @@ import type { AttachedReplicatedState } from "@earendil-works/chord";
 import type { ConversationView, InboxState, LiveState, Registry } from "@earendil-works/pi-durable";
 import type { Protocol } from "@temporalio/agent-harness-client";
 import { setHandler } from "@temporalio/workflow";
-import { WorkflowStream } from "@temporalio/workflow-streams/workflow";
+import { WorkflowStream, type WorkflowStreamState } from "@temporalio/workflow-streams/workflow";
 import { createAgentTrace } from "../../src/agent-harness.js";
 import { status, traceSnapshot } from "../agent-harness/protocol.js";
 
-export function nativeTrace(registry: Registry, model: string) {
-	const stream = new WorkflowStream();
+export type NativeTraceState = { stream: WorkflowStreamState; turn: number; completed: number[] };
+
+export function nativeTrace(registry: Registry, model: string, retainTurns = 20, prior?: NativeTraceState) {
+	const stream = new WorkflowStream(prior?.stream);
 	const events = stream.topic<Protocol.AgentEvent>("turn_events");
-	let turn = 0;
+	let turn = prior?.turn ?? 0;
+	const completed = prior?.completed ?? [];
 	let taskId: number | undefined;
 	let messageId: string | null = null;
 	const messages = new Set<string>();
@@ -39,6 +42,13 @@ export function nativeTrace(registry: Registry, model: string) {
 	);
 	setHandler(traceSnapshot, () => stream.getState());
 	return {
+		get turn() {
+			return turn;
+		},
+		checkpoint(limit = retainTurns): NativeTraceState {
+			while (completed.length > limit) stream.truncate(completed.shift()!);
+			return { stream: stream.getState(), turn, completed: [...completed] };
+		},
 		attach(view: AttachedReplicatedState<ConversationView>, closed: () => boolean) {
 			for (const entry of view.value.entries) seen.add(entry.id);
 			setHandler(status, () => ({
@@ -64,6 +74,10 @@ export function nativeTrace(registry: Registry, model: string) {
 				if (live.run && taskId === undefined) {
 					taskId = live.run.taskId;
 					turn++;
+					if (Number.isFinite(retainTurns)) {
+						stateVersion = -1;
+						previousState = "";
+					}
 					publish({ type: "turn_started" });
 				}
 				for (const entry of next.entries) {
@@ -124,6 +138,9 @@ export function nativeTrace(registry: Registry, model: string) {
 						else publish({ type: "message_handler_error", message: "Run ended before a final response" });
 					}
 					publish({ type: "turn_end" });
+					const state = stream.getState();
+					completed.push(state.base_offset + state.log.length);
+					while (completed.length > retainTurns) stream.truncate(completed.shift()!);
 					taskId = undefined;
 					messageId = null;
 					messages.clear();

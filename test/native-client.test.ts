@@ -80,8 +80,17 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 				const first = await env.client.workflow.start("piNativeSession", {
 					workflowId: id,
 					taskQueue,
-					args: [{ model, cwd: "/workspace", settings: { compaction: { enabled: false, keepRecentTokens: 1 } } }],
+					args: [
+						{
+							model,
+							cwd: "/workspace",
+							maxTurnsPerRun: 2,
+							retainTraceTurns: 2,
+							settings: { compaction: { enabled: false, keepRecentTokens: 1 } },
+						},
+					],
 				});
+				const runIds = [(await first.describe()).runId];
 				const second = env.client.workflow.getHandle(id);
 				const prompt = await first.executeUpdate<
 					{ accepted: true; operationId: string },
@@ -108,6 +117,16 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 					reason: null,
 				});
 				expect(requests[1].context.messages.some((message) => message.role === "assistant")).toBe(true);
+				await expect.poll(async () => (await first.describe()).runId, { timeout: 10000 }).not.toBe(runIds[0]);
+				runIds.push((await first.describe()).runId);
+				expect(
+					await first.executeUpdate("piController.waitForPrompt", { args: [prompt.operationId] }),
+				).toMatchObject({ status: "done", text: "answer 1" });
+				expect(
+					(await first.query<ConversationView>("piTranscript")).entries.some((entry) =>
+						entry.model?.some((m) => m.role === "assistant"),
+					),
+				).toBe(true);
 				const tool = await first.executeUpdate<{ operationId: string }, [{ message: string; images: null }]>(
 					"piController.prompt",
 					{ args: [{ message: "tool prompt", images: null }] },
@@ -124,10 +143,10 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 					.toBe(true);
 				const frames: AgentSseFrame[] = [];
 				for await (const frame of transport.attach(id, 0, AbortSignal.timeout(10_000))) frames.push(frame);
-				expect(frames.filter((frame) => frame.event === "turn_end")).toHaveLength(3);
-				expect(frames.filter((frame) => frame.event === "model_interaction_ended")).toHaveLength(4);
+				expect(frames.filter((frame) => frame.event === "turn_end")).toHaveLength(2);
+				expect(frames.filter((frame) => frame.event === "model_interaction_ended")).toHaveLength(3);
 				expect(frames.filter((frame) => frame.event === "tool_end")).toHaveLength(1);
-				expect(frames.filter((frame) => frame.event === "message_handler_end")).toHaveLength(3);
+				expect(frames.filter((frame) => frame.event === "message_handler_end")).toHaveLength(2);
 				expect(frames.filter((frame) => frame.event === "message_handler_error")).toHaveLength(0);
 				expect(frames.find((frame) => frame.event === "state_snapshot")?.data).toMatchObject({
 					state_id: "pi.usage",
@@ -193,6 +212,8 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 				expect(
 					await first.executeUpdate("piController.waitForPrompt", { args: [blocked.operationId] }),
 				).toMatchObject({ status: "unanswered" });
+				await expect.poll(async () => (await first.describe()).runId, { timeout: 10000 }).not.toBe(runIds[1]);
+				runIds.push((await first.describe()).runId);
 				const aborted: AgentSseFrame[] = [];
 				for await (const frame of transport.attach(id, 0, AbortSignal.timeout(10_000))) aborted.push(frame);
 				expect(aborted.filter((frame) => frame.event === "message_handler_error").length).toBeGreaterThan(0);
@@ -202,8 +223,28 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 					second.executeUpdate("piController.prompt", { args: [{ message: "after close", images: null }] }),
 				).rejects.toThrow();
 				await first.result();
-				const history = await first.fetchHistory();
-				await Worker.runReplayHistory({ workflowBundle: bundle }, history);
+				for (const runId of runIds) {
+					const history = await env.client.workflow.getHandle(id, runId).fetchHistory();
+					await Worker.runReplayHistory({ workflowBundle: bundle }, history);
+				}
+				block = false;
+				const empty = await env.client.workflow.start("piNativeSession", {
+					workflowId: randomUUID(),
+					taskQueue,
+					args: [{ model, cwd: "/workspace", maxTurnsPerRun: 1, retainTraceTurns: 0 }],
+				});
+				const emptyRun = (await empty.describe()).runId;
+				await empty.executeUpdate("piController.prompt", {
+					args: [{ message: "no retained trace", images: null }],
+				});
+				await expect.poll(async () => (await empty.describe()).runId, { timeout: 10000 }).not.toBe(emptyRun);
+				expect(await empty.query("trace_snapshot")).toMatchObject({ log: [] });
+				const emptyFrames: AgentSseFrame[] = [];
+				for await (const frame of transport.attach(empty.workflowId, 0, AbortSignal.timeout(10_000)))
+					emptyFrames.push(frame);
+				expect(emptyFrames).toEqual([]);
+				await empty.signal("piCloseSession");
+				await empty.result();
 			});
 		} finally {
 			console.closeAllConnections();
