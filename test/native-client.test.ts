@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { Context, heartbeat } from "@temporalio/activity";
+import { type AgentSseFrame, HttpTransport } from "@temporalio/agent-harness-client";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { bundleWorkflowCode, Worker } from "@temporalio/worker";
 import { expect, it } from "vitest";
+import { createConsole } from "../examples/agent-harness/server.js";
 import type { ModelRequest } from "../src/types.js";
 import { model } from "./model.js";
 
@@ -28,6 +30,12 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 		const modelStarted = new Promise<void>((resolve) => {
 			started = resolve;
 		});
+		const console = createConsole(env.client, ".", taskQueue);
+		await new Promise<void>((resolve) => console.listen(0, "127.0.0.1", resolve));
+		const address = console.address();
+		if (!address || typeof address === "string") throw new Error("No console port");
+		const baseUrl = `http://127.0.0.1:${address.port}/api/`;
+		const transport = new HttpTransport({ baseUrl });
 		try {
 			const workflowOptions = {
 				workflowsPath: fileURLToPath(new URL("../examples/native-client/workflows.ts", import.meta.url)),
@@ -45,6 +53,11 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 				activities: {
 					async piModel(request: ModelRequest) {
 						requests.push(request);
+						const last = request.context.messages.at(-1);
+						if (last?.role === "user" && last.content === "tool prompt")
+							return fauxAssistantMessage(fauxToolCall("write", { path: "test.txt", content: "hello" }), {
+								stopReason: "toolUse",
+							});
 						if (block) {
 							started();
 							const timer = setInterval(() => heartbeat(), 20);
@@ -56,6 +69,9 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 							}
 						}
 						return fauxAssistantMessage(`answer ${requests.length}`);
+					},
+					async write() {
+						return { content: [{ type: "text", text: "Wrote test.txt" }] };
 					},
 				},
 			});
@@ -92,6 +108,41 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 					reason: null,
 				});
 				expect(requests[1].context.messages.some((message) => message.role === "assistant")).toBe(true);
+				const tool = await first.executeUpdate<{ operationId: string }, [{ message: string; images: null }]>(
+					"piController.prompt",
+					{ args: [{ message: "tool prompt", images: null }] },
+				);
+				expect(await first.executeUpdate("piController.waitForPrompt", { args: [tool.operationId] })).toMatchObject(
+					{ status: "done" },
+				);
+				await expect
+					.poll(async () =>
+						(await (await fetch(`${baseUrl}sessions`)).json()).some(
+							(s: { workflow_id: string }) => s.workflow_id === id,
+						),
+					)
+					.toBe(true);
+				const frames: AgentSseFrame[] = [];
+				for await (const frame of transport.attach(id, 0, AbortSignal.timeout(10_000))) frames.push(frame);
+				expect(frames.filter((frame) => frame.event === "turn_end")).toHaveLength(3);
+				expect(frames.filter((frame) => frame.event === "model_interaction_ended")).toHaveLength(4);
+				expect(frames.filter((frame) => frame.event === "tool_end")).toHaveLength(1);
+				expect(frames.filter((frame) => frame.event === "message_handler_end")).toHaveLength(3);
+				expect(frames.filter((frame) => frame.event === "message_handler_error")).toHaveLength(0);
+				expect(frames.find((frame) => frame.event === "state_snapshot")?.data).toMatchObject({
+					state_id: "pi.usage",
+				});
+				expect(await transport.agentStatus(id)).toMatchObject({ turn_active: false });
+				expect((await fetch(`${baseUrl}agent-interface/${id}`)).status).toBe(200);
+				expect(
+					(
+						await fetch(`${baseUrl}messages`, {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({ session_id: id, message: { type: "ask", payload: { text: "blocked" } } }),
+						})
+					).status,
+				).toBe(405);
 				await first.executeUpdate("piConfigure", { args: [{ thinkingLevel: "off" }] });
 				expect((await second.query<ConversationView>("piTranscript")).docs["pi.agent"].thinkingLevel).toBe("off");
 				expect(await first.executeUpdate("piController.cancelQueued", { args: ["bad-id"] })).toEqual({
@@ -142,6 +193,9 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 				expect(
 					await first.executeUpdate("piController.waitForPrompt", { args: [blocked.operationId] }),
 				).toMatchObject({ status: "unanswered" });
+				const aborted: AgentSseFrame[] = [];
+				for await (const frame of transport.attach(id, 0, AbortSignal.timeout(10_000))) aborted.push(frame);
+				expect(aborted.filter((frame) => frame.event === "message_handler_error").length).toBeGreaterThan(0);
 
 				await first.signal("piCloseSession");
 				await expect(
@@ -152,6 +206,8 @@ it.skipIf(!existsSync(fileURLToPath(new URL("../.local/pi-upstream/package.json"
 				await Worker.runReplayHistory({ workflowBundle: bundle }, history);
 			});
 		} finally {
+			console.closeAllConnections();
+			await new Promise<void>((resolve) => console.close(() => resolve()));
 			await env.teardown();
 		}
 	},

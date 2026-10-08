@@ -27,6 +27,14 @@ npm run example:client -- SESSION_ID
 
 The workflow ID is the session ID. Disconnecting leaves the session running. Escape aborts its work through Pi's controller. Session removal closes the workflow.
 
+To view model calls, tools and Pi's usage state in the community Agent Harness console:
+
+```sh
+npm run example:console
+```
+
+Open `http://localhost:8000/?s=SESSION_ID`. Native sessions are read-only in this console. Send prompts through the Pi client. Trace events are retained in workflow memory and rebuilt by replay; long sessions need retention limits as well as a workflow history limit.
+
 This example exposes one configured model and no session plugin loading or reload. It uses a local Unix socket and polls the native transcript every 100 ms. It has no Continue-as-New, so long sessions need a workflow history limit. The client does not automatically repeat prompts after a disconnect.
 
 Use the existing [Temporal connection settings](../../docs/configuration.md) for the worker and server. The client talks to the local bridge, which can connect to remote Temporal. A remote deployment has not been tested.

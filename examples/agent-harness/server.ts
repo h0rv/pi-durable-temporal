@@ -85,12 +85,13 @@ export function createConsole(
 ) {
 	const summary = async (id: string): Promise<SessionSummary> => {
 		const info = await client.workflow.getHandle(id).describe();
-		if (info.type !== "piSession") throw new RequestError(404, "Unknown Pi session");
+		if (info.type !== "piSession" && info.type !== "piNativeSession")
+			throw new RequestError(404, "Unknown Pi session");
 		return {
 			workflow_id: id,
 			created_at: info.startTime.getTime() / 1000,
-			label: "Pi Durable",
-			agent_workflow_type: "piSession",
+			label: info.type === "piNativeSession" ? "Pi native client" : "Pi Durable",
+			agent_workflow_type: info.type,
 			execution_status: info.status.name,
 			closed: info.status.name !== "RUNNING",
 		};
@@ -202,12 +203,15 @@ export function createConsole(
 			}
 			if (path === "/api/sessions" && request.method === "GET") {
 				const sessions: SessionSummary[] = [];
-				for await (const info of client.workflow.list({ query: "WorkflowType = 'piSession'", pageSize: 100 })) {
+				for await (const info of client.workflow.list({
+					query: "WorkflowType = 'piSession' OR WorkflowType = 'piNativeSession'",
+					pageSize: 100,
+				})) {
 					sessions.push({
 						workflow_id: info.workflowId,
 						created_at: info.startTime.getTime() / 1000,
-						label: "Pi Durable",
-						agent_workflow_type: "piSession",
+						label: info.type === "piNativeSession" ? "Pi native client" : "Pi Durable",
+						agent_workflow_type: info.type,
 						execution_status: info.status.name,
 						closed: info.status.name !== "RUNNING",
 					});
@@ -217,7 +221,8 @@ export function createConsole(
 			}
 			if (path === "/api/chat" && request.method === "POST") {
 				const input = await body(request, chatSchema);
-				await summary(input.session_id);
+				if ((await summary(input.session_id)).agent_workflow_type === "piNativeSession")
+					throw new RequestError(405, "Use the Pi client to send messages to this session");
 				const receipt = await client.workflow
 					.getHandle(input.session_id)
 					.executeUpdate(ask, { args: [input.message.payload] });
@@ -225,7 +230,8 @@ export function createConsole(
 			}
 			if (path === "/api/approve" && request.method === "POST") {
 				const { session_id, ...decision } = await body(request, approvalSchema);
-				await summary(session_id);
+				if ((await summary(session_id)).agent_workflow_type === "piNativeSession")
+					throw new RequestError(405, "This session does not use console approvals");
 				return json(
 					response,
 					await client.workflow.getHandle(session_id).executeUpdate(approveTool, { args: [decision] }),
@@ -233,7 +239,8 @@ export function createConsole(
 			}
 			if (path === "/api/messages" && request.method === "POST") {
 				const input = await body(request, chatSchema);
-				await summary(input.session_id);
+				if ((await summary(input.session_id)).agent_workflow_type === "piNativeSession")
+					throw new RequestError(405, "Use the Pi client to send messages to this session");
 				const receipt: SubmitMessageResponse = await client.workflow
 					.getHandle(input.session_id)
 					.executeUpdate(ask, { args: [input.message.payload] });
@@ -250,7 +257,7 @@ export function createConsole(
 			if (workflowStatus) return json(response, await summary(workflowStatus[1]));
 			const interfacePath = path.match(/^\/api\/agent-interface\/(.+)$/);
 			if (interfacePath) {
-				await summary(interfacePath[1]);
+				if ((await summary(interfacePath[1])).agent_workflow_type === "piNativeSession") return json(response, []);
 				return json(response, [
 					{
 						name: "ask",
@@ -269,8 +276,10 @@ export function createConsole(
 			}
 			const closePath = path.match(/^\/api\/sessions\/(.+)\/close$/);
 			if (closePath && request.method === "POST") {
-				await summary(closePath[1]);
-				await client.workflow.getHandle(closePath[1]).signal(close);
+				const session = await summary(closePath[1]);
+				await client.workflow
+					.getHandle(closePath[1])
+					.signal(session.agent_workflow_type === "piNativeSession" ? "piCloseSession" : close);
 				return json(response, { ok: true });
 			}
 			if (path.startsWith("/api/")) throw new RequestError(501, "This console supports text turns and traces");

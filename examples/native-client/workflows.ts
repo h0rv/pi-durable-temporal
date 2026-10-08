@@ -21,6 +21,7 @@ import {
 import type { AgentController } from "../../.local/pi-upstream/packages/coding-agent/src/experimental/services/agent-controller.ts";
 import { createAgentController } from "../../.local/pi-upstream/packages/coding-agent/src/experimental/services/agent-controller-provider.ts";
 import { createTemporalModels, openTemporalHarness, temporalTool } from "../../src/workflow.js";
+import { nativeTrace } from "./trace.js";
 
 type Arguments<T> = T extends (...args: [...infer Args, Context]) => unknown ? Args : never;
 
@@ -58,6 +59,7 @@ export async function piNativeSession(input: {
 				.map(({ tool }) => temporalTool(tool, { heartbeatTimeout: "10 seconds" }, { stream: true })),
 		}),
 	);
+	const trace = nativeTrace(registry, input.model.id);
 	const harness = await openTemporalHarness({
 		models: createTemporalModels([input.model], undefined, { stream: true }),
 		registry,
@@ -73,6 +75,7 @@ export async function piNativeSession(input: {
 	const controller = createAgentController(harness, conversation);
 	const transcript = await conversation.viewState(BACKGROUND_CONTEXT);
 	let closed = false;
+	const unsubscribeTrace = trace.attach(transcript, () => closed);
 	const admitting = {
 		validator(..._args: unknown[]) {
 			if (closed) throw new Error("Session is closing");
@@ -97,7 +100,9 @@ export async function piNativeSession(input: {
 	} finally {
 		await CancellationScope.nonCancellable(async () => {
 			await controller.abort(BACKGROUND_CONTEXT);
+			trace.close();
 			await condition(allHandlersFinished);
+			unsubscribeTrace();
 			transcript.dispose();
 			await harness.close(BACKGROUND_CONTEXT);
 		});
