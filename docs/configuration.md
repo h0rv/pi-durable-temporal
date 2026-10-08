@@ -43,7 +43,7 @@ npm run example:console
 
 Use the endpoint from your Temporal service. For mutual TLS, set `TEMPORAL_TLS_CERT` and `TEMPORAL_TLS_KEY` to certificate and key paths instead of setting an API key. For a self-hosted service without TLS, explicitly set `TEMPORAL_TLS=false`. Set `TEMPORAL_TASK_QUEUE` to use another queue. The AWS SDK reads its normal credentials or workload role.
 
-The examples refuse to use local payload files for a remote connection. Temporal's S3 driver stores immutable payloads and checks their hashes. Every worker and client must use the same bucket. Retain those objects while their workflow histories can be replayed. Tests check settings for API keys and mutual TLS. A Cloud deployment has not been run.
+The examples refuse to use local payload files for a remote connection. Temporal's S3 driver stores immutable payloads and checks their hashes. Every worker and client must use the same bucket. Retain those objects while their workflow histories can be replayed. Tests check settings for API keys and mutual TLS. A local worker connected to Temporal Cloud passed model and tool execution, worker restart, Continue-as-New and history replay. That test used local payload files. Shared S3 storage has not been tested.
 
 The example console binds to localhost. Add your application authentication and deploy it behind your own proxy before giving other users access. The package itself does not require the console or S3.
 

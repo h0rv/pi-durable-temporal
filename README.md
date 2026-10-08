@@ -4,6 +4,8 @@ Temporal integration for [Pi Durable](https://github.com/earendil-works/pi/tree/
 
 Experimental. Tested with Pi 1.0.4 and Temporal SDK 1.24.0.
 
+Tested locally and on Temporal Cloud, including worker restart, Continue-as-New and history replay. The Cloud test used payload files on one machine. Shared S3 storage has not been tested.
+
 ## Install
 
 GitHub Packages requires a classic token with `read:packages`.

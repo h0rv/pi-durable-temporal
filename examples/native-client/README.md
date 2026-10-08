@@ -47,6 +47,19 @@ This example exposes one configured model and no session plugin loading or reloa
 
 Use the existing [Temporal connection settings](../../docs/configuration.md) for the worker and server. The client talks to the local bridge, which can connect to remote Temporal. A local worker connected to Temporal Cloud has been tested. Workers on multiple machines with shared S3 payload storage have not.
 
+To start a Cloud session, set these values in both the worker and server terminals:
+
+```sh
+export TEMPORAL_ADDRESS='<namespace>.<account>.tmprl.cloud:7233'
+export TEMPORAL_NAMESPACE='<namespace>.<account>'
+export TEMPORAL_API_KEY='<api-key>'
+export TEMPORAL_PAYLOAD_BUCKET='<shared-bucket>'
+export AWS_REGION='us-east-1'
+export PI_PROVIDER=codex
+```
+
+Run `npm run example:client:worker` and `npm run example:client:server` in those terminals. Then run `npm run example:client` to create a session, or `npm run example:client -- SESSION_ID` to attach to a running session. The client needs no Temporal credentials. Completed sessions cannot be attached to.
+
 ```sh
 npm run example:client:check
 npx vitest run test/native-client.test.ts
