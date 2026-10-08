@@ -290,3 +290,141 @@ it.each(["approve", "deny", "close", "auto-escalate", "auto-error"])(
 	},
 	60_000,
 );
+
+it("remembers exact bash calls across worker replacement and Continue-as-New", async () => {
+	const directory = await mkdtemp(join(root, "call-approval-"));
+	const dataConverter = localDataConverter(join(directory, "payloads"));
+	const client = new Client({ connection: env.client.connection, dataConverter });
+	const queue = randomUUID();
+	const executed: string[] = [];
+	let calls = 0;
+	const activities = {
+		async piModel(request: ModelRequest) {
+			calls++;
+			const userIndex = request.context.messages.reduce(
+				(index, message, current) => (message.role === "user" ? current : index),
+				-1,
+			);
+			const current = request.context.messages.slice(userIndex);
+			const result = current.find((message) => message.role === "toolResult");
+			if (
+				result &&
+				JSON.stringify(current[0]).includes("First command") &&
+				current.filter((message) => message.role === "toolResult").length === 1
+			)
+				return fauxAssistantMessage(fauxToolCall("bash", { timeout: 5, command: "printf first" }), {
+					stopReason: "toolUse",
+				});
+			if (result) return fauxAssistantMessage(result.isError ? "Denied" : "Done");
+			const changed = JSON.stringify(current[0]).includes("Changed");
+			const reordered = JSON.stringify(current[0]).includes("Again");
+			return fauxAssistantMessage(
+				fauxToolCall(
+					"bash",
+					reordered
+						? { timeout: 5, command: "printf first" }
+						: { command: changed ? "printf second" : "printf first", timeout: 5 },
+				),
+				{ stopReason: "toolUse" },
+			);
+		},
+		async bash({ command }: { command: string }) {
+			executed.push(command);
+			return { content: [{ type: "text" as const, text: "Done" }] };
+		},
+	};
+	const makeWorker = () =>
+		Worker.create({
+			connection: env.nativeConnection,
+			taskQueue: queue,
+			workflowBundle: bundle,
+			dataConverter,
+			activities,
+		});
+	const server = createConsole(client, root, queue);
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("No HTTP port");
+	const base = `http://127.0.0.1:${address.port}/api/`;
+	const transport = new HttpTransport({ baseUrl: base });
+	const sessionId = randomUUID();
+	const parent = client.workflow.getHandle(sessionId);
+	const pending = async () => {
+		for (let attempt = 0; attempt < 100; attempt++) {
+			const snapshot = await parent.query(status);
+			if (snapshot.pending_approvals.length) return snapshot.pending_approvals[0];
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		throw new Error("Approval request did not appear");
+	};
+	const frames = async () => {
+		const result: AgentSseFrame[] = [];
+		for await (const frame of transport.attach(sessionId, 0, AbortSignal.timeout(15_000))) result.push(frame);
+		return result;
+	};
+	let firstRunId = "";
+	try {
+		await (await makeWorker()).runUntil(async () => {
+			await transport.createSession({
+				agent_workflow_type: "piSession",
+				session_id: sessionId,
+				data: { task: "workspace", maxTurnsPerRun: 1 },
+			});
+			firstRunId = (await parent.describe()).runId;
+			await transport.submitMessage(sessionId, { type: "ask", payload: { text: "First command" } });
+			const request = await pending();
+			expect(request.tool_input).toEqual({ command: "printf first", timeout: 5 });
+			const approved = await fetch(`${base}approve`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					session_id: sessionId,
+					tool_id: request.tool_id,
+					approved: true,
+					remember: true,
+					rememberScope: "call",
+				}),
+			});
+			expect(approved.status).toBe(200);
+			expect((await frames()).filter((frame) => frame.event === "turn_end")).toHaveLength(1);
+			for (let attempt = 0; attempt < 100 && (await parent.describe()).runId === firstRunId; attempt++)
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			expect((await parent.describe()).runId).not.toBe(firstRunId);
+		});
+		await (await makeWorker()).runUntil(async () => {
+			await transport.submitMessage(sessionId, { type: "ask", payload: { text: "Again with the same command" } });
+			const same = await frames();
+			expect(same.filter((frame) => frame.event === "turn_end")).toHaveLength(2);
+			expect(same.filter((frame) => frame.event === "tool_approval_requested")).toHaveLength(1);
+			expect(executed).toEqual(["printf first", "printf first", "printf first"]);
+			await transport.submitMessage(sessionId, { type: "ask", payload: { text: "Changed command" } });
+			const changed = await pending();
+			expect(changed.tool_input).toEqual({ command: "printf second", timeout: 5 });
+			expect(executed).toHaveLength(3);
+			await transport.approveTool(sessionId, changed.tool_id, { approved: false });
+			const denied = await frames();
+			expect(denied.filter((frame) => frame.event === "tool_approval_requested")).toHaveLength(2);
+			expect(denied.filter((frame) => frame.event === "turn_end")).toHaveLength(3);
+			await transport.closeSession(sessionId);
+			await parent.result();
+			await Worker.runReplayHistory(
+				{ workflowBundle: bundle, dataConverter },
+				await client.workflow.getHandle(sessionId, firstRunId).fetchHistory(),
+				sessionId,
+			);
+			for (let turn = 1; turn <= 3; turn++) {
+				const child = client.workflow.getHandle(`${sessionId}/turn-${turn}`);
+				await Worker.runReplayHistory(
+					{ workflowBundle: bundle, dataConverter },
+					await child.fetchHistory(),
+					child.workflowId,
+				);
+			}
+			expect(calls).toBe(7);
+			expect(executed).toHaveLength(3);
+		});
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
+}, 60_000);

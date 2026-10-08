@@ -56,7 +56,7 @@ In another terminal, use Pi's normal TUI:
 pi --extension ./src/pi-extension.ts --temporal
 ```
 
-Use `/temporal approve` or `/temporal deny` for tool decisions. Tab completes the commands. See [TUI setup](docs/tui.md) for reconnecting and client limits.
+Pi opens an approval dialog for tool calls. Always approve remembers the exact call for the session. `/temporal open` opens the agent console. `/temporal workflow` opens Temporal Web. See [TUI setup](docs/tui.md) for reconnecting and client limits.
 
 ## Limits
 

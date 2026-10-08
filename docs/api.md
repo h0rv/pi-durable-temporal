@@ -59,6 +59,8 @@ See [state](state.md) for checkpoint use and retention.
 
 The optional `@h0rv/pi-durable-temporal/agent-harness` module exports `createAgentTrace` for model/tool events and approvals. It also exports `createObservableState` for state snapshots and patches. You supply the event publisher and approval evaluator. See [the console example](../examples/agent-harness/workflows.ts).
 
+`ApprovalDecision` accepts `remember: true`. By default, it approves later calls to the same tool for the session. Add `rememberScope: "call"` to remember only that tool and its exact arguments. The console retains these decisions across turns and Continue-as-New.
+
 Model activities default to a five-minute timeout and three attempts. Retryable Pi provider errors become Temporal activity failures. Pi's separate retry loop is disabled by default in `runTemporalAgent` and `runTemporalTurn`.
 
 Tool activities default to one attempt. Set a retry policy in `ActivityOptions` for tools that can safely repeat. Replay reuses completed activity results. An interrupted activity can run again, so its side effects must tolerate repeated attempts. Use the workflow ID and activity ID as a stable key to record which effects have already completed.

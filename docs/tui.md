@@ -20,13 +20,15 @@ New workflows use Pi's session ID as their workflow ID. The console uses that sa
 
 ## Approvals
 
-Pi opens its native selector when a tool needs approval. It shows the tool arguments and offers Approve, Deny and Later. Escape leaves the request pending. Use `/temporal` to reopen it.
+Pi opens its native selector when a tool needs approval. It shows the tool arguments and offers Approve, Always approve, Deny and Later. Always approve remembers this tool and its exact arguments for this Temporal session. Changing a command or argument requires approval again. Escape leaves the request pending. Use `/temporal` to reopen it.
 
 `/temporal approve` and `/temporal deny` also work. Tab completes actions and pending tool IDs.
 
 The workflow retains approval requests until someone answers. Another TUI or the browser console can answer them. Disconnecting leaves the workflow running.
 
 ## Reconnect
+
+`/temporal open` opens the agent console in your browser. `/temporal workflow` opens the current workflow in Temporal Web. Set `PI_TEMPORAL_WEB_URL` for a remote Web UI. The default is `http://localhost:8233`, with `TEMPORAL_NAMESPACE` or `default`.
 
 `/temporal status` shows the trace URL and workflow ID. Attach to that workflow after restarting Pi:
 

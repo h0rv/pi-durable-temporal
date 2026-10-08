@@ -1,17 +1,19 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
 	discoverAndLoadExtensions,
 	ExtensionRunner,
+	type ExtensionUIContext,
 	initTheme,
 	ModelRegistry,
 	ModelRuntime,
 	SessionManager,
+	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown } from "@earendil-works/pi-tui";
+import { Container, Markdown, ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { Protocol } from "@temporalio/agent-harness-client";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -121,7 +123,11 @@ async function loadClient(manager = SessionManager.inMemory()) {
 			undefined,
 	);
 	const setStatus = vi.fn();
-	const setWidget = vi.fn();
+	const nativeTui = new TuiMainScreen(new ProcessTerminal());
+	vi.spyOn(nativeTui, "requestRender").mockImplementation(() => {});
+	const setWidget = vi.fn((_key: string, content: string[] | Parameters<ExtensionUIContext["setWidget"]>[1]) => {
+		if (typeof content === "function") content(nativeTui, runner.getUIContext().theme);
+	});
 	runner.setUIContext({ ...runner.getUIContext(), notify, confirm, select, setStatus, setWidget }, "tui");
 	const sendMessage = vi.fn();
 	const sendUserMessage = vi.fn();
@@ -551,7 +557,7 @@ it("uses Pi's user message and Markdown components for remote conversation rende
 	expect(replyComponent.render(60).join("\n")).toContain("Reviewed");
 });
 
-for (const choice of ["Approve", "Deny"]) {
+for (const choice of ["Approve", "Always approve", "Deny"]) {
 	it(`opens Pi's selector and sends ${choice} without a slash command`, async () => {
 		const fixture = await consoleFixture();
 		fixture.events.push(
@@ -571,11 +577,12 @@ for (const choice of ["Approve", "Deny"]) {
 		expect(JSON.parse(decision?.body ?? "null")).toMatchObject({
 			session_id: "remote",
 			tool_id: "remote/publish",
-			approved: choice === "Approve",
+			approved: choice !== "Deny",
+			...(choice === "Always approve" ? { remember: true, rememberScope: "call" } : {}),
 		});
 		expect(client.select).toHaveBeenCalledWith(
 			'publish\n{\n  "path": "release.txt"\n}',
-			["Approve", "Deny", "Later"],
+			["Approve", "Always approve", "Deny", "Later"],
 			{ signal: expect.any(AbortSignal) },
 		);
 	});
@@ -663,4 +670,102 @@ it("dismisses an approval answered by another client", async () => {
 	finish?.("Approve");
 	await vi.waitFor(() => expect(client.setWidget).toHaveBeenLastCalledWith("temporal", undefined));
 	expect(fixture.requests.some((request) => request.path === "/api/approve")).toBe(false);
+});
+
+it.skipIf(process.platform === "win32")("opens the console and Temporal Web for the attached session", async () => {
+	const fixture = await consoleFixture();
+	const directory = await mkdtemp(join(tmpdir(), "pi-temporal-open-"));
+	cleanups.push(() => rm(directory, { recursive: true, force: true }));
+	const executable = join(directory, process.platform === "darwin" ? "open" : "xdg-open");
+	const log = join(directory, "urls");
+	await writeFile(executable, '#!/bin/sh\nprintf \'%s\\n\' "$@" >> "$PI_TEST_OPEN_LOG"\n');
+	await chmod(executable, 0o755);
+	vi.stubEnv("PATH", `${directory}:${process.env.PATH}`);
+	vi.stubEnv("PI_TEST_OPEN_LOG", log);
+	const client = await loadClient();
+	await client.runCommand("open");
+	expect(client.notify).toHaveBeenCalledWith("Connect with /temporal first", "error");
+	await client.runCommand("remote");
+	await client.runCommand("open");
+	vi.stubEnv("PI_TEMPORAL_WEB_URL", "https://temporal.example.com/");
+	vi.stubEnv("TEMPORAL_NAMESPACE", "pi agents");
+	await client.runCommand("workflow");
+	expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
+		`${fixture.url}/?s=remote`,
+		"https://temporal.example.com/namespaces/pi%20agents/workflows/remote",
+	]);
+});
+
+it("renders read results with Pi's native collapsed tool row and preserves details", async () => {
+	initTheme("dark", false);
+	const fixture = await consoleFixture();
+	fixture.events.push(
+		{ type: "message_accepted", handler: "ask", payload: { text: "read file" }, disposition: "opened" },
+		{ type: "tool_requested", tool_id: "remote/read", tool_name: "read", tool_input: { path: "note.txt" } },
+		{
+			type: "tool_end",
+			tool_id: "remote/read",
+			tool_name: "read",
+			tool_output: JSON.stringify({
+				content: [{ type: "text", text: "file contents" }],
+				details: { marker: "preserved" },
+				isError: false,
+			}),
+		},
+	);
+	const client = await loadClient();
+	await client.runCommand("remote");
+	await vi.waitFor(() => expect(client.transcript()).toHaveLength(2));
+	const entry = client.transcript().at(-1);
+	const renderer = client.runner.getEntryRenderer("temporal-transcript");
+	if (!renderer || entry?.type !== "custom") throw new Error("Missing tool transcript");
+	expect(entry).toMatchObject({
+		data: {
+			tool: {
+				id: "remote/read",
+				args: { path: "note.txt" },
+				result: { details: { marker: "preserved" }, isError: false },
+			},
+		},
+	});
+	const theme = client.runner.getUIContext().theme;
+	const collapsed = renderer(entry, { expanded: false }, theme);
+	expect(collapsed).toBeInstanceOf(ToolExecutionComponent);
+	expect(collapsed?.render(80).join("\n")).toContain("note.txt");
+	expect(collapsed?.render(80).join("\n")).not.toContain("file contents");
+	const expanded = renderer(entry, { expanded: true }, theme);
+	expect(expanded?.render(80).join("\n")).toContain("file contents");
+});
+
+it("uses native tool error and generic tool fallback rendering", async () => {
+	initTheme("dark", false);
+	const fixture = await consoleFixture();
+	fixture.events.push(
+		{ type: "message_accepted", handler: "ask", payload: { text: "run tools" }, disposition: "opened" },
+		{ type: "tool_requested", tool_id: "remote/bash", tool_name: "bash", tool_input: { command: "run-tests" } },
+		{ type: "tool_error", tool_id: "remote/bash", tool_name: "bash", message: "Tests failed" },
+		{ type: "tool_requested", tool_id: "remote/custom", tool_name: "customTool", tool_input: { value: 12 } },
+		{
+			type: "tool_end",
+			tool_id: "remote/custom",
+			tool_name: "customTool",
+			tool_output: JSON.stringify({ content: [{ type: "text", text: "Custom output" }] }),
+		},
+	);
+	const client = await loadClient();
+	await client.runCommand("remote");
+	await vi.waitFor(() => expect(client.transcript()).toHaveLength(3));
+	const renderer = client.runner.getEntryRenderer("temporal-transcript");
+	if (!renderer) throw new Error("Missing tool renderer");
+	const theme = client.runner.getUIContext().theme;
+	const entries = client.transcript().slice(1);
+	for (const entry of entries) {
+		if (entry.type !== "custom") throw new Error("Unexpected transcript entry");
+		expect(renderer(entry, { expanded: false }, theme)).toBeInstanceOf(ToolExecutionComponent);
+	}
+	const [error, generic] = entries;
+	if (error?.type !== "custom" || generic?.type !== "custom") throw new Error("Missing tool entries");
+	expect(error).toMatchObject({ data: { tool: { result: { isError: true } } } });
+	expect(renderer(error, { expanded: false }, theme)?.render(80).join("\n")).toContain("Tests failed");
+	expect(renderer(generic, { expanded: false }, theme)?.render(80).join("\n")).toContain("Custom output");
 });

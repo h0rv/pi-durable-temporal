@@ -11,6 +11,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import { WorkflowStream, type WorkflowStreamState } from "@temporalio/workflow-streams/workflow";
+import { approvalCallKey } from "../../src/agent-harness.js";
 import type { PiCheckpoint } from "../../src/state.js";
 import {
 	type ApprovalDecision,
@@ -69,6 +70,7 @@ type SessionCheckpoint = {
 	admitted: number;
 	current: number;
 	allowed: string[];
+	allowedCalls?: string[];
 	resolved: string[];
 	plan: { phase: string; completedTools: number; pendingApprovals: number; turn: number };
 	planVersion: number;
@@ -76,6 +78,7 @@ type SessionCheckpoint = {
 };
 export async function piSession(options: SessionOptions = {}, prior?: SessionCheckpoint) {
 	const persistent = patched("persistent-session-v1");
+	let scopedApprovals = patched("remembered-call-approvals-v1");
 	const stream = new WorkflowStream(prior?.stream);
 	setHandler(traceSnapshot, () => stream.getState());
 	const events = stream.topic<Protocol.AgentEvent>("turn_events");
@@ -96,6 +99,7 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 					? ["readCandidate", "writeCandidate", "runTests"]
 					: []),
 	);
+	const allowedCalls = new Set<string>(prior?.allowedCalls);
 	let planVersion = prior?.planVersion ?? -1;
 	const plan = prior?.plan ?? { phase: "idle", completedTools: 0, pendingApprovals: 0, turn: 0 };
 	const publish = (turn: Turn, event: Protocol.AgentStreamItem) =>
@@ -144,7 +148,12 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 		approvals.delete(decision.tool_id);
 		plan.phase = approvals.size ? "awaitingApproval" : "working";
 		publishPlan();
-		if (decision.approved && decision.remember) allowed.add(request.tool_name);
+		if (decision.approved && decision.remember) {
+			if (decision.rememberScope === "call") {
+				scopedApprovals = patched("remembered-call-approvals-v1");
+				allowedCalls.add(approvalCallKey(request.tool_name, request.tool_input));
+			} else allowed.add(request.tool_name);
+		}
 		return { tool_id: decision.tool_id, accepted: true as const };
 	};
 	setHandler(approveTool, resolveApproval);
@@ -209,6 +218,7 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 						parentWorkflowId: workflowInfo().workflowId,
 						options,
 						allowedTools: [...allowed],
+						...(scopedApprovals ? { allowedCalls: [...allowedCalls] } : {}),
 						state: piState,
 					},
 				],
@@ -241,6 +251,7 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 					admitted,
 					current,
 					allowed: [...allowed],
+					...(scopedApprovals ? { allowedCalls: [...allowedCalls] } : {}),
 					resolved: [...resolved],
 					plan,
 					planVersion,

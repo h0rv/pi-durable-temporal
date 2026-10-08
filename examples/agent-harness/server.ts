@@ -44,6 +44,7 @@ const approvalSchema = Type.Object({
 	approved: Type.Boolean(),
 	reason: Type.Optional(Type.Union([Type.String({ maxLength: 4000 }), Type.Null()])),
 	remember: Type.Optional(Type.Boolean()),
+	rememberScope: Type.Optional(Type.Union([Type.Literal("tool"), Type.Literal("call")])),
 });
 const chatSchema = Type.Object({
 	session_id: Type.String(),

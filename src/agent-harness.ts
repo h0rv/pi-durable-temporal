@@ -4,7 +4,7 @@ import type { Protocol, ToolApprovalDecision } from "@temporalio/agent-harness-c
 import { condition, defineSignal, patched, setHandler, uuid4, workflowInfo } from "@temporalio/workflow";
 
 export type ApprovalRequest = Extract<Protocol.AgentStreamItem, { type: "tool_approval_requested" }>;
-export type ApprovalDecision = ToolApprovalDecision & { tool_id: string };
+export type ApprovalDecision = ToolApprovalDecision & { tool_id: string; rememberScope?: "tool" | "call" };
 export type ApprovalEvaluation = Pick<
 	Extract<Protocol.AgentStreamItem, { type: "auto_approval_evaluation_ended" }>,
 	"verdict" | "reason" | "details"
@@ -15,15 +15,32 @@ export type AgentTraceOptions = {
 	publish: (event: Protocol.AgentStreamItem) => Promise<void>;
 	approvalMode?: "manual" | "auto";
 	allowedTools?: readonly string[];
+	allowedCalls?: readonly string[];
 	evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>;
 	evaluator?: string;
 };
+
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value !== null && typeof value === "object")
+		return `{${Object.entries(value)
+			.filter(([, item]) => item !== undefined)
+			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+			.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+			.join(",")}}`;
+	return JSON.stringify(value) ?? "null";
+}
+
+export function approvalCallKey(tool: string, args: ApprovalRequest["tool_input"]): string {
+	return canonicalJson([tool, args]);
+}
 
 /** Trace Pi's generation and tool hooks and wait for approval before tool execution. */
 export function createAgentTrace(options: AgentTraceOptions) {
 	const decisions = new Map<string, ApprovalDecision>();
 	const waiting = new Set<string>();
 	const allowed = new Set(options.allowedTools);
+	const allowedCalls = new Set(options.allowedCalls);
 	const resolve = (decision: ApprovalDecision) => {
 		if (waiting.has(decision.tool_id) && !decisions.has(decision.tool_id)) decisions.set(decision.tool_id, decision);
 	};
@@ -59,7 +76,13 @@ export function createAgentTrace(options: AgentTraceOptions) {
 					const toolId = `${workflowInfo().workflowId}/${call.id}`;
 					const fields = { tool_id: toolId, tool_name: call.name, tool_input: call.arguments };
 					await options.publish({ type: "tool_requested", ...fields });
-					if (patched("tool-approvals-v1") && !allowed.has(call.name)) {
+					const scopedApprovals = patched("remembered-call-approvals-v1");
+					const callKey = approvalCallKey(call.name, call.arguments);
+					if (
+						patched("tool-approvals-v1") &&
+						!allowed.has(call.name) &&
+						!(scopedApprovals && allowedCalls.has(callKey))
+					) {
 						let decision: ApprovalDecision | undefined;
 						if (options.approvalMode === "auto" && options.evaluate) {
 							const evaluation = {
@@ -98,7 +121,10 @@ export function createAgentTrace(options: AgentTraceOptions) {
 							waiting.delete(toolId);
 							decisions.delete(toolId);
 						}
-						if (decision.approved && decision.remember) allowed.add(call.name);
+						if (decision.approved && decision.remember) {
+							if (decision.rememberScope === "call") allowedCalls.add(callKey);
+							else allowed.add(call.name);
+						}
 						await options.publish({
 							type: "tool_approval_resolved",
 							tool_id: toolId,

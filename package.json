@@ -37,7 +37,7 @@
 	"scripts": {
 		"build": "tsc -p tsconfig.build.json",
 		"check": "biome check . && tsc --noEmit",
-		"test": "vitest run --maxWorkers=2",
+		"test": "vitest run --dir test --maxWorkers=2",
 		"example": "tsx examples/local.ts",
 		"example:worker": "tsx examples/agent-harness/worker.ts",
 		"example:e2e": "tsx examples/agent-harness/e2e.ts",

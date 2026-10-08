@@ -1,34 +1,51 @@
 import {
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getMarkdownTheme,
+	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 import { AgentSessionCore, HttpTransport, PlainSessionState, waitingCalls } from "@temporalio/agent-harness-client";
 
 type Connection = { url: string; sessionId: string; offset: number };
-type Transcript = { label: string; text: string };
-function toolText(output: string) {
+type ToolResult = Parameters<ToolExecutionComponent["updateResult"]>[0];
+type ToolRow = { id: string; args: unknown; result: ToolResult };
+type Transcript = { label: string; text: string; tool?: ToolRow };
+function toolResult(output: string, isError: boolean): ToolResult {
 	try {
 		const result: unknown = JSON.parse(output);
-		if (result && typeof result === "object" && "content" in result && Array.isArray(result.content))
-			return (
-				result.content
-					.flatMap((block: unknown) =>
-						block && typeof block === "object" && "text" in block && typeof block.text === "string"
-							? [block.text]
-							: [],
-					)
-					.join("\n") || output
+		if (result && typeof result === "object" && "content" in result && Array.isArray(result.content)) {
+			const content = result.content.filter((block: unknown): block is ToolResult["content"][number] =>
+				Boolean(
+					block &&
+						typeof block === "object" &&
+						"type" in block &&
+						typeof block.type === "string" &&
+						(!("text" in block) || typeof block.text === "string") &&
+						(!("data" in block) || typeof block.data === "string") &&
+						(!("mimeType" in block) || typeof block.mimeType === "string"),
+				),
 			);
+			return {
+				content,
+				details: "details" in result ? result.details : undefined,
+				isError: isError || ("isError" in result && result.isError === true),
+			};
+		}
 	} catch {}
-	return output;
+	return { content: [{ type: "text", text: output }], isError };
 }
 const connectionEntry = "temporal-connection";
 const transcriptEntry = "temporal-transcript";
 
 export default function temporalExtension(pi: ExtensionAPI) {
+	let nativeTui: TUI | undefined;
+	let toolDefinitions: Record<string, NonNullable<ConstructorParameters<typeof ToolExecutionComponent>[4]>> = {};
 	let connection: Connection | undefined;
 	let enabled = false;
 	let session: AgentSessionCore | undefined;
@@ -48,9 +65,25 @@ export default function temporalExtension(pi: ExtensionAPI) {
 		type: "string",
 		description: "Attach to an existing Temporal workflow ID",
 	});
-	pi.registerEntryRenderer<Transcript>(transcriptEntry, (entry, _options, theme) => {
+	pi.registerEntryRenderer<Transcript>(transcriptEntry, (entry, options, theme) => {
 		if (!entry.data) return undefined;
-		const { label, text } = entry.data;
+		const { label, text, tool } = entry.data;
+		if (tool && nativeTui && context) {
+			const component = new ToolExecutionComponent(
+				label,
+				tool.id,
+				tool.args,
+				{ showImages: false },
+				toolDefinitions[label],
+				nativeTui,
+				context.cwd,
+			);
+			component.setArgsComplete();
+			component.markExecutionStarted();
+			component.updateResult(tool.result);
+			component.setExpanded(options.expanded);
+			return component;
+		}
 		if (label === "You") return new UserMessageComponent(text);
 		if (label === "Pi on Temporal") {
 			const component = new Container();
@@ -61,7 +94,8 @@ export default function temporalExtension(pi: ExtensionAPI) {
 		return new Text(`${theme.fg("muted", label)}\n${text}`, 1, 1);
 	});
 	const save = () => pi.appendEntry(connectionEntry, connection ? { ...connection } : null);
-	const show = (label: string, text: string) => pi.appendEntry<Transcript>(transcriptEntry, { label, text });
+	const show = (label: string, text: string, tool?: ToolRow) =>
+		pi.appendEntry<Transcript>(transcriptEntry, { label, text, ...(tool ? { tool } : {}) });
 	const stop = () => {
 		dialog?.abort();
 		dialog = undefined;
@@ -71,6 +105,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 		unsubscribe = undefined;
 		session?.stop();
 		session = undefined;
+		context?.ui.setWidget("temporal-renderer", undefined);
 		context?.ui.setStatus("temporal", undefined);
 		context?.ui.setWidget("temporal", undefined);
 		updateWidget = undefined;
@@ -78,6 +113,18 @@ export default function temporalExtension(pi: ExtensionAPI) {
 	const observe = (ctx: ExtensionContext) => {
 		stop();
 		context = ctx;
+		if (ctx.mode === "tui") {
+			toolDefinitions = {
+				read: createReadToolDefinition(ctx.cwd),
+				bash: createBashToolDefinition(ctx.cwd),
+				edit: createEditToolDefinition(ctx.cwd),
+				write: createWriteToolDefinition(ctx.cwd),
+			};
+			ctx.ui.setWidget("temporal-renderer", (tui) => {
+				nativeTui = tui;
+				return new Spacer(0);
+			});
+		}
 		if (!connection) return;
 		const current = connection;
 		const state = new PlainSessionState();
@@ -107,15 +154,17 @@ export default function temporalExtension(pi: ExtensionAPI) {
 			try {
 				const choice = await ctx.ui.select(
 					`${selected.part.toolName}\n${JSON.stringify(selected.part.input, null, 2)}`,
-					["Approve", "Deny", "Later"],
+					["Approve", "Always approve", "Deny", "Later"],
 					{ signal: controller.signal },
 				);
 				if (controller.signal.aborted || session !== client) return;
-				if (choice === "Approve" || choice === "Deny") {
-					await client.respondToApproval(selected.part.toolId, {
-						approved: choice === "Approve",
+				if (choice === "Approve" || choice === "Always approve" || choice === "Deny") {
+					const decision = {
+						approved: choice !== "Deny",
 						reason: "Decision from Pi TUI",
-					});
+						...(choice === "Always approve" ? { remember: true, rememberScope: "call" as const } : {}),
+					};
+					await client.respondToApproval(selected.part.toolId, decision);
 				}
 			} catch (error) {
 				if (!controller.signal.aborted) {
@@ -140,11 +189,16 @@ export default function temporalExtension(pi: ExtensionAPI) {
 					: undefined,
 			);
 		};
+		const toolCalls = new Map<string, unknown>();
 		let processed = 0;
 		unsubscribe = state.subscribe(() => {
 			let changed = false;
 			for (const frame of state.frames.slice(processed)) {
-				if (frame.data.resume_offset <= current.offset) continue;
+				if (frame.event === "tool_requested") toolCalls.set(frame.data.tool_id, frame.data.tool_input);
+				if (frame.data.resume_offset <= current.offset) {
+					if (frame.event === "tool_end" || frame.event === "tool_error") toolCalls.delete(frame.data.tool_id);
+					continue;
+				}
 				switch (frame.event) {
 					case "message_accepted":
 						if (typeof frame.data.payload.text === "string") show("You", frame.data.payload.text);
@@ -153,11 +207,17 @@ export default function temporalExtension(pi: ExtensionAPI) {
 						show("Pi on Temporal", frame.data.text);
 						break;
 					case "tool_end":
-						show(frame.data.tool_name, toolText(frame.data.tool_output));
+					case "tool_error": {
+						const output = frame.event === "tool_end" ? frame.data.tool_output : frame.data.message;
+						const result = toolResult(output, frame.event === "tool_error");
+						show(
+							frame.data.tool_name,
+							result.content.flatMap((block) => (block.text ? [block.text] : [])).join("\n"),
+							{ id: frame.data.tool_id, args: toolCalls.get(frame.data.tool_id), result },
+						);
+						toolCalls.delete(frame.data.tool_id);
 						break;
-					case "tool_error":
-						show(frame.data.tool_name, toolText(frame.data.message));
-						break;
+					}
 					case "message_handler_error":
 						show("Temporal error", frame.data.message);
 						break;
@@ -200,7 +260,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 	pi.registerCommand("temporal", {
 		description: "Connect, approve, deny, reconnect or disconnect a Temporal session",
 		getArgumentCompletions: (prefix) => {
-			const actions = ["approve", "deny", "reconnect", "disconnect", "status"];
+			const actions = ["approve", "deny", "open", "workflow", "reconnect", "disconnect", "status"];
 			const [action, input] = prefix.split(/\s+/, 2);
 			const values =
 				input !== undefined && (action === "approve" || action === "deny") && session
@@ -218,6 +278,21 @@ export default function temporalExtension(pi: ExtensionAPI) {
 					await review?.(true);
 				} else if (action === "new") {
 					ctx.ui.notify("Use /new in Pi, then /temporal to connect the new session.", "info");
+				} else if (action === "open" || action === "workflow") {
+					if (!connection) throw new Error("Connect with /temporal first");
+					const url =
+						action === "open"
+							? `${connection.url}/?s=${encodeURIComponent(connection.sessionId)}`
+							: `${(process.env.PI_TEMPORAL_WEB_URL ?? "http://localhost:8233").replace(/\/$/, "")}/namespaces/${encodeURIComponent(process.env.TEMPORAL_NAMESPACE ?? "default")}/workflows/${encodeURIComponent(connection.sessionId)}`;
+					const parsed = new URL(url);
+					if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Expected an HTTP URL");
+					const command =
+						process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
+					const result = await pi.exec(
+						command,
+						process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url],
+					);
+					if (result.code !== 0) throw new Error(result.stderr || `Could not open ${url}`);
 				} else if (action === "status") {
 					ctx.ui.notify(
 						connection ? `${connection.url}/?s=${encodeURIComponent(connection.sessionId)}` : "Disconnected",

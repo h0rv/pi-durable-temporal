@@ -21,6 +21,7 @@ export async function piAgent(input: {
 	parentWorkflowId: string;
 	options?: SessionOptions;
 	allowedTools?: string[];
+	allowedCalls?: string[];
 	state?: PiCheckpoint;
 }) {
 	const selectedModel = patched("configurable-model-v1") ? (input.options?.model ?? scriptedModel) : model;
@@ -131,6 +132,7 @@ export async function piAgent(input: {
 			publish,
 			approvalMode: input.options?.approvalMode,
 			allowedTools: input.allowedTools,
+			allowedCalls: input.allowedCalls,
 			evaluate: approvalActivity.evaluateApproval,
 			evaluator: "bounded-calculator",
 		}).extension,
