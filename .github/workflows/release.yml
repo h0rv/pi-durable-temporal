@@ -11,7 +11,6 @@ jobs:
     needs: checks
     runs-on: ubuntu-latest
     permissions:
-      contents: write
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -28,7 +27,3 @@ jobs:
       - run: npm publish .local/*.tgz --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: gh release upload "$RELEASE_TAG" .local/*.tgz --clobber
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}

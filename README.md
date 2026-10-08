@@ -6,9 +6,11 @@ Experimental. Tested with Pi 1.0.4 and Temporal SDK 1.24.0.
 
 ## Install
 
+GitHub Packages requires a classic token with `read:packages`.
+
 ```sh
-npm install \
-  https://github.com/h0rv/pi-durable-temporal/releases/download/v0.1.0/h0rv-pi-durable-temporal-0.1.0.tgz \
+npm login --scope=@h0rv --auth-type=legacy --registry=https://npm.pkg.github.com
+npm install @h0rv/pi-durable-temporal@0.1.0 \
   @earendil-works/pi-durable@1.0.4 @earendil-works/pi-ai@1.0.4 \
   @earendil-works/chord@1.0.4 protobufjs@8.8.0 typebox@1.3.27
 ```
