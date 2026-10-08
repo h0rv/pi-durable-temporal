@@ -30,7 +30,7 @@ The [native client example](../examples/native-client/README.md) connects Pi's s
 
 ## Deployment
 
-Local recovery and replay are tested. Remote connection settings are tested, but a Temporal Cloud deployment has not been run.
+Local recovery and replay are tested. A local worker connected to Temporal Cloud was also tested with a real model, filesystem tools, worker restart, Continue-as-New and replay. That test used the file payload driver on one machine. Shared S3 payload storage and workers on multiple machines have not been tested.
 
 Model credentials and MCP connections stay on the worker. Files accessed by tools need shared persistent storage when activities can move between workers. `NodeExecutionEnv` is a local process environment, not a security sandbox.
 

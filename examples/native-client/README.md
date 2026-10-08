@@ -45,7 +45,7 @@ Pi's complete checkpoint is preserved through the existing session adapter. Pi h
 
 This example exposes one configured model and no session plugin loading or reload. It uses a local Unix socket and polls the native transcript every 100 ms. A single busy turn can still reach Temporal's history limits before an idle rollover. The client does not automatically repeat prompts after a disconnect.
 
-Use the existing [Temporal connection settings](../../docs/configuration.md) for the worker and server. The client talks to the local bridge, which can connect to remote Temporal. A remote deployment has not been tested.
+Use the existing [Temporal connection settings](../../docs/configuration.md) for the worker and server. The client talks to the local bridge, which can connect to remote Temporal. A local worker connected to Temporal Cloud has been tested. Workers on multiple machines with shared S3 payload storage have not.
 
 ```sh
 npm run example:client:check
