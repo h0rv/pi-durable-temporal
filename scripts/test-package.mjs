@@ -24,9 +24,6 @@ try {
 			join(directory, archive.filename),
 			"@temporalio/worker@1.24.0",
 			"@temporalio/testing@1.24.0",
-			"@earendil-works/pi-ai@1.0.4",
-			"@earendil-works/pi-durable@1.0.4",
-			"@earendil-works/chord@1.0.4",
 		],
 		{ cwd: directory },
 	);

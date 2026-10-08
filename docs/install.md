@@ -4,9 +4,7 @@ The package is published to GitHub Packages as `@h0rv/pi-durable-temporal`. GitH
 
 ```sh
 npm login --scope=@h0rv --auth-type=legacy --registry=https://npm.pkg.github.com
-npm install @h0rv/pi-durable-temporal@0.1.0 \
-  @earendil-works/pi-durable@1.0.4 @earendil-works/pi-ai@1.0.4 \
-  @earendil-works/chord@1.0.4 protobufjs@8.8.0 typebox@1.3.27
+npm install @h0rv/pi-durable-temporal
 ```
 
 See [GitHub's registry instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).

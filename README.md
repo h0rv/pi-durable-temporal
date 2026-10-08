@@ -10,9 +10,7 @@ GitHub Packages requires a classic token with `read:packages`.
 
 ```sh
 npm login --scope=@h0rv --auth-type=legacy --registry=https://npm.pkg.github.com
-npm install @h0rv/pi-durable-temporal@0.1.0 \
-  @earendil-works/pi-durable@1.0.4 @earendil-works/pi-ai@1.0.4 \
-  @earendil-works/chord@1.0.4 protobufjs@8.8.0 typebox@1.3.27
+npm install @h0rv/pi-durable-temporal
 ```
 
 [GitHub Packages setup](docs/install.md).

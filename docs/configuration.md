@@ -22,7 +22,7 @@ External Storage is in public preview. Retain stored data for the workflow lifet
 
 External Storage reduces history size. Pi still holds the context in worker memory. Use Pi compaction to limit that context. Keep workflow runs bounded and use Continue-as-New to limit history event counts. See [state](state.md) for checkpoints and archive growth.
 
-Temporal SDK 1.24 needs a shared `protobufjs` instance for external storage. Install the 8.8.0 peer at the project root as shown in the README.
+Temporal SDK 1.24 needs a shared `protobufjs` instance for external storage. The package declares 8.8.0 as a peer dependency so npm resolves a shared copy.
 
 ## Connect to an existing Temporal service
 
