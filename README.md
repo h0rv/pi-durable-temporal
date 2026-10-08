@@ -1,24 +1,10 @@
 # pi-durable-temporal
 
-> Experimental. Supports Pi 1.0.4 and Temporal SDK 1.24.0.
+Temporal integration for [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable). Pi's harness runs in a workflow. Model calls and tools run as activities.
 
-A Temporal integration for [Pi Durable](https://github.com/earendil-works/pi/tree/main/packages/durable). Pi's agent loop runs in a workflow. Model calls and tools run as activities.
-
-## Try it
-
-```sh
-brew install temporal
-git clone https://github.com/h0rv/pi-durable-temporal.git
-cd pi-durable-temporal
-npm ci --ignore-scripts
-npm run dev
-```
-
-Open http://localhost:8000. The calculator needs no API key. The UI is Temporal's community Agent Harness console.
+Experimental. Tested with Pi 1.0.4 and Temporal SDK 1.24.0.
 
 ## Install
-
-Install the release archive:
 
 ```sh
 npm install \
@@ -27,34 +13,22 @@ npm install \
   @earendil-works/chord@1.0.4 protobufjs@8.8.0 typebox@1.3.27
 ```
 
-For GitHub Packages, see [registry setup](docs/install.md).
+[GitHub Packages setup](docs/install.md).
 
-## Use it
+## Usage
 
-Import workflow functions from `@h0rv/pi-durable-temporal/workflow`. Register `createModelActivities(models)` on your worker with your Pi providers. Wrap tools with `temporalTool` to run them as activities.
+Use `createTemporalModels` for model requests and `temporalTool` for tools in your registry. Pass the models and registry to `openTemporalHarness` with your Pi options. These functions are exported from `@h0rv/pi-durable-temporal/workflow`. Register `createModelActivities(models)` and your tool activities on the worker.
 
-See [the workflow and worker example](docs/api.md). Use [checkpoints](docs/state.md) to retain Pi state between turns or workflow runs.
-
-## Examples
-
-- [Coding agent](docs/examples.md#coding-agent). Fix a module, approve publication, replace the worker.
-- [Multiple agents](docs/examples.md#multiple-agents). Write, review, test, and publish a file.
-- [MCP and code mode](examples/mcp/README.md). Run Pi's sandbox with the reference MCP filesystem server.
-- [Approvals and state](examples/agent-harness/README.md). Human decisions, automatic evaluations, and a visible plan.
-
-## Limits
-
-Pi's stock TUI does not expose a remote execution backend in the supported release. This package integrates Pi Durable with Temporal.
-
-Hooks must follow Temporal's replay rules. Interrupted activities can repeat. Tools must prevent duplicate side effects.
-
-Use [external payload storage](docs/configuration.md#store-session-data-outside-temporal) to keep session data out of Temporal history. Remote deployments have not been tested.
-
-See [the docs](docs/README.md) for configuration and support limits.
+- [API](docs/api.md)
+- [State and checkpoints](docs/state.md)
+- [Configuration](docs/configuration.md)
+- [Compatibility and retry behavior](docs/compatibility.md)
+- [Examples](docs/examples.md)
 
 ## Development
 
 ```sh
+npm ci --ignore-scripts
 npm run check
 npm test
 npm run test:package
