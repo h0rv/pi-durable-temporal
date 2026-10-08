@@ -1,5 +1,5 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -28,6 +28,9 @@ async function consoleFixture() {
 	let rejectSessions = false;
 	let holdAttach = false;
 	let closedAttachments = 0;
+	const streams = new Set<ServerResponse>();
+	const frame = (event: Protocol.AgentStreamItem, index: number) =>
+		`event: ${event.type}\ndata: ${JSON.stringify({ ...event, agent_id: "pi", turn_id: "turn", turn_number: 1, message_id: "message", timestamp: 1, event_offset: index, resume_offset: index + 1 })}\n\n`;
 	const server = createServer(async (request, response) => {
 		const chunks: Buffer[] = [];
 		for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -35,13 +38,13 @@ async function consoleFixture() {
 		requests.push({ path: url.pathname, method: request.method ?? "GET", body: Buffer.concat(chunks).toString() });
 		if (url.pathname === "/api/attach") {
 			response.writeHead(200, { "Content-Type": "text/event-stream" });
+			streams.add(response);
 			response.on("close", () => {
+				streams.delete(response);
 				closedAttachments++;
 			});
 			for (const [index, event] of events.entries()) {
-				response.write(
-					`event: ${event.type}\ndata: ${JSON.stringify({ ...event, agent_id: "pi", turn_id: "turn", turn_number: 1, message_id: "message", timestamp: 1, event_offset: index, resume_offset: index + 1 })}\n\n`,
-				);
+				response.write(frame(event, index));
 			}
 			if (!holdAttach) response.end();
 			return;
@@ -76,6 +79,11 @@ async function consoleFixture() {
 		url,
 		requests,
 		events,
+		emit: (event: Protocol.AgentStreamItem) => {
+			const index = events.length;
+			events.push(event);
+			for (const stream of streams) stream.write(frame(event, index));
+		},
 		holdAttach: () => {
 			holdAttach = true;
 		},
@@ -108,7 +116,10 @@ async function loadClient(manager = SessionManager.inMemory()) {
 	);
 	const notify = vi.fn();
 	const confirm = vi.fn(async () => true);
-	const select = vi.fn(async (_title: string, options: string[]): Promise<string | undefined> => options[0]);
+	const select = vi.fn(
+		async (_title: string, _options: string[], _opts?: { signal?: AbortSignal }): Promise<string | undefined> =>
+			undefined,
+	);
 	const setStatus = vi.fn();
 	const setWidget = vi.fn();
 	runner.setUIContext({ ...runner.getUIContext(), notify, confirm, select, setStatus, setWidget }, "tui");
@@ -160,6 +171,32 @@ async function loadClient(manager = SessionManager.inMemory()) {
 		sendUserMessage,
 	};
 }
+
+it("uses Pi's session ID when creating and reconnecting a workflow", async () => {
+	const fixture = await consoleFixture();
+	const client = await loadClient();
+	const id = client.manager.getSessionId();
+	await client.runCommand("");
+	await client.runCommand("disconnect");
+	await client.runCommand("");
+	const created = fixture.requests.filter((request) => request.path === "/api/sessions");
+	expect(created).toHaveLength(2);
+	for (const request of created) expect(JSON.parse(request.body)).toMatchObject({ session_id: id });
+});
+
+it("lets another Pi session attach to the same workflow ID", async () => {
+	const fixture = await consoleFixture();
+	const first = await loadClient();
+	const second = await loadClient();
+	expect(first.manager.getSessionId()).not.toBe(second.manager.getSessionId());
+	await first.runCommand("");
+	await second.runCommand(first.manager.getSessionId());
+	await second.runner.emitInput("hello from another client", undefined, "interactive");
+	await vi.waitFor(() => expect(fixture.requests.some((request) => request.path === "/api/messages")).toBe(true));
+	const submitted = fixture.requests.find((request) => request.path === "/api/messages");
+	expect(JSON.parse(submitted?.body ?? "null")).toMatchObject({ session_id: first.manager.getSessionId() });
+	expect(fixture.requests.filter((request) => request.path === "/api/sessions")).toHaveLength(1);
+});
 
 it("loads through Pi and sends input through the official HTTP client without starting a local turn", async () => {
 	const fixture = await consoleFixture();
@@ -512,4 +549,118 @@ it("uses Pi's user message and Markdown components for remote conversation rende
 	if (!(replyComponent instanceof Container)) throw new Error("Missing reply container");
 	expect(replyComponent.children.some((child) => child instanceof Markdown)).toBe(true);
 	expect(replyComponent.render(60).join("\n")).toContain("Reviewed");
+});
+
+for (const choice of ["Approve", "Deny"]) {
+	it(`opens Pi's selector and sends ${choice} without a slash command`, async () => {
+		const fixture = await consoleFixture();
+		fixture.events.push(
+			{ type: "message_accepted", handler: "ask", payload: { text: "publish" }, disposition: "opened" },
+			{
+				type: "tool_approval_requested",
+				tool_id: "remote/publish",
+				tool_name: "publish",
+				tool_input: { path: "release.txt" },
+			},
+		);
+		const client = await loadClient();
+		client.select.mockResolvedValueOnce(choice);
+		await client.runCommand("remote");
+		await vi.waitFor(() => expect(fixture.requests.some((request) => request.path === "/api/approve")).toBe(true));
+		const decision = fixture.requests.find((request) => request.path === "/api/approve");
+		expect(JSON.parse(decision?.body ?? "null")).toMatchObject({
+			session_id: "remote",
+			tool_id: "remote/publish",
+			approved: choice === "Approve",
+		});
+		expect(client.select).toHaveBeenCalledWith(
+			'publish\n{\n  "path": "release.txt"\n}',
+			["Approve", "Deny", "Later"],
+			{ signal: expect.any(AbortSignal) },
+		);
+	});
+}
+
+it("keeps a dismissed approval pending and reopens it with bare /temporal", async () => {
+	const fixture = await consoleFixture();
+	fixture.events.push(
+		{ type: "message_accepted", handler: "ask", payload: { text: "publish" }, disposition: "opened" },
+		{
+			type: "tool_approval_requested",
+			tool_id: "remote/publish",
+			tool_name: "publish",
+			tool_input: { path: "release.txt" },
+		},
+	);
+	const client = await loadClient();
+	await client.runCommand("remote");
+	await vi.waitFor(() => expect(client.select).toHaveBeenCalledTimes(1));
+	await vi.waitFor(() =>
+		expect(client.setWidget).toHaveBeenLastCalledWith("temporal", [
+			"publish needs approval. /temporal approve or /temporal deny",
+		]),
+	);
+	client.select.mockResolvedValueOnce("Approve");
+	await client.runCommand("");
+	expect(fixture.requests.some((request) => request.path === "/api/sessions")).toBe(false);
+	expect(fixture.requests.filter((request) => request.path === "/api/attach")).toHaveLength(1);
+	expect(
+		JSON.parse(fixture.requests.find((request) => request.path === "/api/approve")?.body ?? "null"),
+	).toMatchObject({ session_id: "remote", approved: true });
+});
+
+it("dismisses an open approval dialog when the client disconnects", async () => {
+	const fixture = await consoleFixture();
+	fixture.events.push(
+		{ type: "message_accepted", handler: "ask", payload: { text: "publish" }, disposition: "opened" },
+		{ type: "tool_approval_requested", tool_id: "remote/publish", tool_name: "publish", tool_input: {} },
+	);
+	const client = await loadClient();
+	let finish: ((choice: string) => void) | undefined;
+	client.select.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+	);
+	await client.runCommand("remote");
+	await vi.waitFor(() => expect(client.select).toHaveBeenCalled());
+	const options = client.select.mock.calls[0]?.[2] as { signal: AbortSignal };
+	await client.runCommand("disconnect");
+	expect(options.signal.aborted).toBe(true);
+	finish?.("Approve");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	expect(fixture.requests.some((request) => request.path === "/api/approve")).toBe(false);
+});
+
+it("dismisses an approval answered by another client", async () => {
+	const fixture = await consoleFixture();
+	fixture.holdAttach();
+	fixture.events.push(
+		{ type: "message_accepted", handler: "ask", payload: { text: "publish" }, disposition: "opened" },
+		{ type: "tool_approval_requested", tool_id: "remote/publish", tool_name: "publish", tool_input: {} },
+	);
+	const client = await loadClient();
+	let finish: ((choice: string) => void) | undefined;
+	client.select.mockImplementationOnce(
+		() =>
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+	);
+	await client.runCommand("remote");
+	await vi.waitFor(() => expect(client.select).toHaveBeenCalled());
+	const options = client.select.mock.calls[0]?.[2] as { signal: AbortSignal };
+	fixture.emit({
+		type: "tool_approval_resolved",
+		tool_id: "remote/publish",
+		tool_name: "publish",
+		approved: true,
+		reason: "Another client",
+		remember: false,
+	});
+	await vi.waitFor(() => expect(options.signal.aborted).toBe(true));
+	finish?.("Approve");
+	await vi.waitFor(() => expect(client.setWidget).toHaveBeenLastCalledWith("temporal", undefined));
+	expect(fixture.requests.some((request) => request.path === "/api/approve")).toBe(false);
 });

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -37,6 +36,9 @@ export default function temporalExtension(pi: ExtensionAPI) {
 	let context: ExtensionContext | undefined;
 	let updateWidget: (() => void) | undefined;
 	let confirming = false;
+	let dialog: AbortController | undefined;
+	let dialogToolId: string | undefined;
+	let review: ((reopen?: boolean) => Promise<void>) | undefined;
 	pi.registerFlag("temporal", {
 		type: "boolean",
 		description: "Connect the TUI to a Temporal session",
@@ -61,6 +63,10 @@ export default function temporalExtension(pi: ExtensionAPI) {
 	const save = () => pi.appendEntry(connectionEntry, connection ? { ...connection } : null);
 	const show = (label: string, text: string) => pi.appendEntry<Transcript>(transcriptEntry, { label, text });
 	const stop = () => {
+		dialog?.abort();
+		dialog = undefined;
+		confirming = false;
+		review = undefined;
 		unsubscribe?.();
 		unsubscribe = undefined;
 		session?.stop();
@@ -85,6 +91,45 @@ export default function temporalExtension(pi: ExtensionAPI) {
 			state,
 		);
 		session = client;
+		const prompted = new Set<string>();
+		review = async (reopen = false) => {
+			if (confirming || !ctx.hasUI) return;
+			const pending = waitingCalls(state.agents, () => false).approvals;
+			if (reopen) prompted.clear();
+			const selected = pending.find(({ part }) => !prompted.has(part.toolId));
+			if (!selected) return;
+			prompted.add(selected.part.toolId);
+			confirming = true;
+			const controller = new AbortController();
+			dialog = controller;
+			dialogToolId = selected.part.toolId;
+			ctx.ui.setWidget("temporal", undefined);
+			try {
+				const choice = await ctx.ui.select(
+					`${selected.part.toolName}\n${JSON.stringify(selected.part.input, null, 2)}`,
+					["Approve", "Deny", "Later"],
+					{ signal: controller.signal },
+				);
+				if (controller.signal.aborted || session !== client) return;
+				if (choice === "Approve" || choice === "Deny") {
+					await client.respondToApproval(selected.part.toolId, {
+						approved: choice === "Approve",
+						reason: "Decision from Pi TUI",
+					});
+				}
+			} catch (error) {
+				if (!controller.signal.aborted) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			} finally {
+				if (dialog === controller) {
+					dialog = undefined;
+					confirming = false;
+					updateWidget?.();
+					queueMicrotask(() => void review?.());
+				}
+			}
+		};
 		updateWidget = () => {
 			if (confirming) return;
 			const approvals = waitingCalls(state.agents, () => false).approvals;
@@ -123,7 +168,10 @@ export default function temporalExtension(pi: ExtensionAPI) {
 			processed = state.frames.length;
 			if (changed) save();
 			ctx.ui.setStatus("temporal", `Temporal ${state.connection} · ${state.agentStatus}`);
+			const pending = waitingCalls(state.agents, () => false).approvals;
+			if (dialog && !pending.some(({ part }) => part.toolId === dialogToolId)) dialog.abort();
 			updateWidget?.();
+			queueMicrotask(() => void review?.());
 		});
 		client.start();
 	};
@@ -131,7 +179,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 		enabled = true;
 		const url = (process.env.PI_TEMPORAL_URL ?? "http://localhost:8000").replace(/\/$/, "");
 		const transport = new HttpTransport({ baseUrl: `${url}/api/` });
-		const sessionId = id || `pi-tui-${randomUUID()}`;
+		const sessionId = id || ctx.sessionManager.getSessionId();
 		if (id) {
 			const status = await transport.workflowStatus(sessionId, AbortSignal.timeout(10_000));
 			if (status.closed) throw new Error("This Temporal session is closed");
@@ -152,7 +200,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 	pi.registerCommand("temporal", {
 		description: "Connect, approve, deny, reconnect or disconnect a Temporal session",
 		getArgumentCompletions: (prefix) => {
-			const actions = ["approve", "deny", "reconnect", "disconnect", "new", "status"];
+			const actions = ["approve", "deny", "reconnect", "disconnect", "status"];
 			const [action, input] = prefix.split(/\s+/, 2);
 			const values =
 				input !== undefined && (action === "approve" || action === "deny") && session
@@ -166,7 +214,11 @@ export default function temporalExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			try {
 				const [action, id] = args.trim().split(/\s+/);
-				if (action === "status") {
+				if (!action && connection) {
+					await review?.(true);
+				} else if (action === "new") {
+					ctx.ui.notify("Use /new in Pi, then /temporal to connect the new session.", "info");
+				} else if (action === "status") {
 					ctx.ui.notify(
 						connection ? `${connection.url}/?s=${encodeURIComponent(connection.sessionId)}` : "Disconnected",
 						"info",
@@ -181,6 +233,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 					if (!connection) throw new Error("Connect with /temporal first");
 					observe(ctx);
 				} else if (action === "approve" || action === "deny") {
+					if (confirming) return;
 					if (!session) throw new Error("Connect with /temporal first");
 					const approvals = waitingCalls(session.state.agents, () => false).approvals;
 					let selected = id
@@ -225,7 +278,7 @@ export default function temporalExtension(pi: ExtensionAPI) {
 					});
 				} else {
 					if (!ctx.isIdle()) throw new Error("Wait for the local agent before connecting");
-					await connect(action === "new" ? undefined : action || undefined, ctx);
+					await connect(action || undefined, ctx);
 				}
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

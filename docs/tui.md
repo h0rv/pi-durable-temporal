@@ -16,9 +16,13 @@ pi --extension ./src/pi-extension.ts --temporal
 
 The extension submits prompts to Temporal. The worker runs Pi Durable with its native read, write, edit and bash tools. The normal TUI displays the remote transcript. Local model calls do not run while connected.
 
+New workflows use Pi's session ID as their workflow ID. The console uses that same session ID. Use Pi's `/new` command to start a new session. Another client can attach with `--temporal-session SESSION_ID`.
+
 ## Approvals
 
-Use `/temporal approve` to inspect a pending call in Pi's confirmation dialog. Use `/temporal deny` to reject it. With several pending calls, Pi opens its selector first. Tab completes actions and pending tool IDs.
+Pi opens its native selector when a tool needs approval. It shows the tool arguments and offers Approve, Deny and Later. Escape leaves the request pending. Use `/temporal` to reopen it.
+
+`/temporal approve` and `/temporal deny` also work. Tab completes actions and pending tool IDs.
 
 The workflow retains approval requests until someone answers. Another TUI or the browser console can answer them. Disconnecting leaves the workflow running.
 
