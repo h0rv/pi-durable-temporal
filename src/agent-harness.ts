@@ -41,6 +41,7 @@ export function createAgentTrace(options: AgentTraceOptions) {
 	const waiting = new Set<string>();
 	const allowed = new Set(options.allowedTools);
 	const allowedCalls = new Set(options.allowedCalls);
+	const approvalsEnabled = options.approvalMode !== undefined || !patched("opt-in-approvals-v1");
 	const resolve = (decision: ApprovalDecision) => {
 		if (waiting.has(decision.tool_id) && !decisions.has(decision.tool_id)) decisions.set(decision.tool_id, decision);
 	};
@@ -79,6 +80,7 @@ export function createAgentTrace(options: AgentTraceOptions) {
 					const scopedApprovals = patched("remembered-call-approvals-v1");
 					const callKey = approvalCallKey(call.name, call.arguments);
 					if (
+						approvalsEnabled &&
 						patched("tool-approvals-v1") &&
 						!allowed.has(call.name) &&
 						!(scopedApprovals && allowedCalls.has(callKey))

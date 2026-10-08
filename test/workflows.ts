@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, GenerationTask, hook } from "@earendil-works/pi-durable";
 import { CancellationScope, condition, defineQuery, defineSignal, setHandler } from "@temporalio/workflow";
 import type { ModelProgress, ToolProgress } from "../src/types.js";
 import { createTemporalModels, openTemporalHarness, runTemporalAgent, temporalTool } from "../src/workflow.js";
@@ -106,8 +106,15 @@ export async function deferredTransport() {
 	if (!selected) throw new Error("Missing test model");
 	const pending = await models.streamSimple(selected, { messages: [] }, { deferred: true }).result();
 	if (!pending.deferred) throw new Error("Missing deferred handle");
-	const result = await models.fetchDeferred(selected, pending.deferred, { wait: 1000 });
-	await models.cancelDeferred(selected, pending.deferred);
+	const result = await models.fetchDeferred(selected, pending.deferred, {
+		wait: 1000,
+		headers: { "x-deferred": "fetch" },
+		timeoutMs: 1234,
+	});
+	await models.cancelDeferred(selected, pending.deferred, {
+		headers: { "x-deferred": "cancel" },
+		env: { PI_REGION: "test" },
+	});
 	return result;
 }
 
@@ -144,4 +151,60 @@ export async function toolTransport() {
 		},
 	);
 	return { result, progress };
+}
+
+export async function providerOptions() {
+	const models = createTemporalModels([model]);
+	const selected = models.getModel(model.provider, model.id);
+	if (!selected) throw new Error("Missing test model");
+	return models
+		.streamSimple(
+			selected,
+			{ messages: [{ role: "user", content: "Options", timestamp: 0 }] },
+			{
+				headers: { "x-route": "test", "x-default": null },
+				env: { PI_PROVIDER_REGION: "test" },
+				samplingParams: { top_p: 0.5 },
+				metadata: { label: "test" },
+				apiKey: "workflow-credential-must-not-cross",
+				onPayload: () => {
+					throw new Error("Worker callback must not cross");
+				},
+			},
+		)
+		.result();
+}
+
+export async function nativeRetry(temporalRetry: boolean) {
+	const responses: string[] = [];
+	const registry = createRegistry();
+	registry.install(
+		defineExtension({
+			name: "responses",
+			hooks: [
+				hook(GenerationTask, {
+					afterResponse: (message) => {
+						responses.push(message.stopReason);
+					},
+				}),
+			],
+		}),
+	);
+	const result = await runTemporalAgent(
+		{ type: "input", content: "Retry" },
+		{
+			models: createTemporalModels(
+				[model],
+				temporalRetry
+					? {
+							retry: { maximumAttempts: 2, initialInterval: "10 ms" },
+						}
+					: undefined,
+			),
+			registry,
+			agent: { model: { provider: model.provider, modelId: model.id } },
+			settings: { retry: { baseDelayMs: 10 }, compaction: { enabled: false } },
+		},
+	);
+	return { ...result, responses };
 }

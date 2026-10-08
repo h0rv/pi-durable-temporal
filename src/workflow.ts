@@ -36,13 +36,14 @@ import {
 } from "@temporalio/workflow";
 import type { createModelActivities } from "./index.js";
 import { type PiCheckpoint, TemporalStorage } from "./state.js";
+import type { ToolActivityResult, ToolReports } from "./tool-reports.js";
 import type { ModelProgress, ModelRequest, ProgressTarget, ToolCallInfo, ToolProgress } from "./types.js";
 
 export { type PiCheckpoint, TemporalStorage } from "./state.js";
 
 const DEFAULT_ACTIVITY_OPTIONS: ActivityOptions = {
 	startToCloseTimeout: "5 minutes",
-	retry: { maximumAttempts: 3 },
+	retry: { maximumAttempts: 1 },
 };
 
 async function withSignal<T>(signal: AbortSignal | undefined, run: () => Promise<T>): Promise<T> {
@@ -65,10 +66,12 @@ export function createTemporalModels(
 	options?: ActivityOptions,
 	transport: ModelTransportOptions = {},
 ): Models {
+	const nativeRetry = patched("native-pi-retry-v1");
 	const activities = proxyActivities<ReturnType<typeof createModelActivities>>({
 		...DEFAULT_ACTIVITY_OPTIONS,
+		...(nativeRetry ? { heartbeatTimeout: "10 seconds" } : {}),
 		...options,
-		retry: { ...DEFAULT_ACTIVITY_OPTIONS.retry, ...options?.retry },
+		retry: { maximumAttempts: nativeRetry ? 1 : 3, ...options?.retry },
 	});
 	const models = createModels({ authContext: { env: async () => undefined, fileExists: async () => false } });
 	const pending = new Map<string, { stream: AssistantMessageEventStream; attempt: number }>();
@@ -119,48 +122,29 @@ export function createTemporalModels(
 			});
 		return events;
 	};
+	const requestOptions = (request: SimpleStreamOptions = {}): ModelRequest["options"] => {
+		const {
+			signal: _signal,
+			apiKey: _apiKey,
+			fetch: _fetch,
+			telemetryContext: _telemetryContext,
+			onPayload: _onPayload,
+			onResponse: _onResponse,
+			onProviderStreamEvent: _onProviderStreamEvent,
+			...options
+		} = request;
+		return options;
+	};
 	for (const provider of new Set(catalog.map((model) => model.provider))) {
-		const stream = (model: Model<Api>, context: ModelRequest["context"], request?: SimpleStreamOptions) => {
-			const {
-				temperature,
-				maxTokens,
-				reasoning,
-				thinkingBudgets,
-				toolChoice,
-				sessionId,
-				cacheRetention,
-				metadata,
-				timeoutMs,
-				maxRetries,
-				maxRetryDelayMs,
-				transport,
-				deferred,
-				websocketConnectTimeoutMs,
-			} = request ?? {};
-			return dispatch(request?.signal, (progress) =>
+		const stream = (model: Model<Api>, context: ModelRequest["context"], request?: SimpleStreamOptions) =>
+			dispatch(request?.signal, (progress) =>
 				activities.piModel({
 					model: { provider: model.provider, id: model.id },
 					context,
 					progress,
-					options: {
-						temperature,
-						maxTokens,
-						reasoning,
-						thinkingBudgets,
-						toolChoice,
-						sessionId,
-						cacheRetention,
-						metadata,
-						timeoutMs,
-						maxRetries,
-						maxRetryDelayMs,
-						transport,
-						deferred,
-						websocketConnectTimeoutMs,
-					},
+					options: requestOptions(request),
 				}),
 			);
-		};
 		models.setProvider(
 			createProvider({
 				id: provider,
@@ -175,12 +159,17 @@ export function createTemporalModels(
 								model: { provider: model.provider, id: model.id },
 								handle,
 								wait: request?.wait,
+								options: requestOptions(request),
 								progress,
 							}),
 						),
 					cancelDeferred: (model, handle, request) =>
 						withSignal(request?.signal, () =>
-							activities.piCancelDeferred({ model: { provider: model.provider, id: model.id }, handle }),
+							activities.piCancelDeferred({
+								model: { provider: model.provider, id: model.id },
+								handle,
+								options: requestOptions(request),
+							}),
 						),
 				},
 			}),
@@ -197,22 +186,53 @@ export function temporalTool<P extends TSchema>(
 ): ToolRegistration<P> {
 	const pending = new Map<
 		string,
-		{ api: Parameters<ToolRegistration<P>["execute"]>[1]; attempt: number; output: string }
+		{
+			api: Parameters<ToolRegistration<P>["execute"]>[1];
+			attempt: number;
+			output: string;
+			reports: number;
+			publication: Promise<void>;
+		}
 	>();
+	const applyReports = async (api: Parameters<ToolRegistration<P>["execute"]>[1], reports: ToolReports, seen = 0) => {
+		for (const report of reports.piToolReports.slice(seen)) {
+			if (report.type === "output")
+				api.output(typeof report.chunk === "string" ? report.chunk : Uint8Array.from(report.chunk), report.skipped);
+			else if (report.type === "diagnostic") api.diagnostic(report.value);
+			else await api.details(report.value, BACKGROUND_CONTEXT);
+		}
+	};
 	if (transport.stream)
-		setHandler(defineSignal<[ToolProgress]>(`pi_tool_progress:${tool.name}`), (progress) => {
+		setHandler(defineSignal<[ToolProgress]>(`pi_tool_progress:${tool.name}`), async (progress) => {
 			const call = pending.get(progress.requestId);
 			if (!call || progress.attempt < call.attempt) return;
-			if (progress.attempt === call.attempt)
+			if (progress.reports && (options?.retry?.maximumAttempts ?? 1) !== 1) {
+				transport.onProgress?.(progress);
+				return;
+			}
+			if (progress.attempt !== call.attempt) call.reports = 0;
+			const previousAttempt = call.attempt;
+			call.attempt = progress.attempt;
+			if (progress.reports) {
+				const reports = progress.reports;
+				const offset = progress.offset ?? 0;
+				const seen = Math.max(0, call.reports - offset);
+				call.reports = Math.max(call.reports, offset + progress.reports.length);
+				call.publication = call.publication.then(() =>
+					applyReports(call.api, { piToolReports: reports, attempt: progress.attempt }, seen),
+				);
+				await call.publication;
+			} else if (progress.output !== undefined && progress.attempt === previousAttempt) {
 				call.api.output(
 					progress.output.startsWith(call.output) ? progress.output.slice(call.output.length) : progress.output,
 				);
+				call.output = progress.output;
+			}
 			call.attempt = progress.attempt;
-			call.output = progress.output;
 			transport.onProgress?.(progress);
 		});
 	const activities = proxyActivities<
-		Record<string, (args: Static<P>, call: ToolCallInfo) => Promise<ToolExecutionResult>>
+		Record<string, (args: Static<P>, call: ToolCallInfo) => Promise<ToolExecutionResult | ToolActivityResult>>
 	>({ startToCloseTimeout: "5 minutes", ...options, retry: { maximumAttempts: 1, ...options?.retry } });
 	return {
 		...tool,
@@ -221,17 +241,48 @@ export function temporalTool<P extends TSchema>(
 			const progress = transport.stream
 				? { workflowId: workflowInfo().workflowId, runId: workflowInfo().runId, requestId: `tool-${api.taskId}` }
 				: undefined;
-			if (progress) pending.set(progress.requestId, { api, attempt: 1, output: "" });
+			if (progress)
+				pending.set(progress.requestId, {
+					api,
+					attempt: 1,
+					output: "",
+					reports: 0,
+					publication: Promise.resolve(),
+				});
 			try {
-				return await withSignal(context.abortSignal, () =>
+				const result = await withSignal(context.abortSignal, () =>
 					activities[tool.name](args, {
 						callId: api.callId,
 						taskId: api.taskId,
 						conversationId: api.conversationId,
+						outputWindow: api.outputWindow,
 						...(progress ? { progress } : {}),
 					}),
 				);
+				if ("reports" in result) {
+					const call = progress && pending.get(progress.requestId);
+					if (call) await call.publication;
+					await applyReports(
+						api,
+						result.reports,
+						call && call.attempt === result.reports.attempt ? call.reports : 0,
+					);
+					const { reports: _reports, ...nativeResult } = result;
+					return nativeResult;
+				}
+				return result;
 			} catch (error) {
+				if (error instanceof ActivityFailure && error.cause instanceof ApplicationFailure) {
+					const reports = error.cause.details?.find(
+						(detail): detail is ToolReports =>
+							!!detail && typeof detail === "object" && "piToolReports" in detail,
+					);
+					if (reports) {
+						const call = progress && pending.get(progress.requestId);
+						if (call) await call.publication;
+						await applyReports(api, reports, call && call.attempt === reports.attempt ? call.reports : 0);
+					}
+				}
 				if (error instanceof ActivityFailure && error.cause && patched("pi-tool-errors-v1"))
 					throw new Error(error.cause.message, { cause: error });
 				throw error;
@@ -252,10 +303,11 @@ export async function openTemporalHarness(
 
 /** Run one submission and close the harness. */
 export async function runTemporalAgent(input: InputSubmissionDraft, options: HarnessOptions & { agent: AgentChange }) {
-	const harness = await openTemporalHarness({
-		...options,
-		settings: { ...options.settings, retry: { enabled: false, ...options.settings?.retry } },
-	});
+	const harness = await openTemporalHarness(
+		patched("native-pi-retry-v1")
+			? options
+			: { ...options, settings: { ...options.settings, retry: { enabled: false, ...options.settings?.retry } } },
+	);
 	try {
 		const root = await harness.root(BACKGROUND_CONTEXT, { agent: options.agent });
 		const submission = await root.submit(input, BACKGROUND_CONTEXT);
@@ -297,7 +349,9 @@ export async function runTemporalTurn(
 	state?: PiCheckpoint,
 ): Promise<{ text: string; usage: Awaited<ReturnType<Harness["usage"]>>; state: PiCheckpoint }> {
 	const session = await openTemporalSession(
-		{ ...options, settings: { ...options.settings, retry: { enabled: false, ...options.settings?.retry } } },
+		patched("native-pi-retry-v1")
+			? options
+			: { ...options, settings: { ...options.settings, retry: { enabled: false, ...options.settings?.retry } } },
 		state,
 	);
 	try {

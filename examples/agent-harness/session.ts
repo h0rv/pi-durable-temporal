@@ -78,6 +78,7 @@ type SessionCheckpoint = {
 };
 export async function piSession(options: SessionOptions = {}, prior?: SessionCheckpoint) {
 	const persistent = patched("persistent-session-v1");
+	const scopedTurns = patched("turn-approval-cleanup-v1");
 	let scopedApprovals = patched("remembered-call-approvals-v1");
 	const stream = new WorkflowStream(prior?.stream);
 	setHandler(traceSnapshot, () => stream.getState());
@@ -133,14 +134,15 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 		if (resolved.has(decision.tool_id))
 			throw ApplicationFailure.nonRetryable("This approval already has a decision", "ToolApprovalAlreadyResolved");
 		if (!request || !active) throw ApplicationFailure.nonRetryable("Unknown pending approval", "UnknownApproval");
+		if (scopedTurns && request.turn_number !== active.turn_number)
+			throw ApplicationFailure.nonRetryable("Unknown pending approval", "UnknownApproval");
 		if (decision.remember && !decision.approved)
 			throw ApplicationFailure.nonRetryable("Only approvals can be remembered", "InvalidApproval");
 		resolved.add(decision.tool_id);
 		try {
-			await getExternalWorkflowHandle(`${workflowInfo().workflowId}/turn-${active.turn_number}`).signal(
-				approvalResolved,
-				decision,
-			);
+			await getExternalWorkflowHandle(
+				`${workflowInfo().workflowId}/turn-${scopedTurns ? request.turn_number : active.turn_number}`,
+			).signal(approvalResolved, decision);
 		} catch (error) {
 			resolved.delete(decision.tool_id);
 			throw error;
@@ -228,6 +230,19 @@ export async function piSession(options: SessionOptions = {}, prior?: SessionChe
 			plan.phase = "complete";
 			publishPlan();
 		} catch (error) {
+			if (scopedTurns)
+				for (const request of approvals.values()) {
+					if (request.turn_number !== current) continue;
+					approvals.delete(request.tool_id);
+					publish(active, {
+						type: "tool_approval_resolved",
+						tool_id: request.tool_id,
+						tool_name: request.tool_name,
+						approved: false,
+						reason: "Turn failed",
+						remember: false,
+					});
+				}
 			plan.phase = "failed";
 			publishPlan();
 			publish(active, {

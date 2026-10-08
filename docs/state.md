@@ -24,6 +24,8 @@ Configure [external payload storage](configuration.md#store-session-data-outside
 
 ## Long sessions
 
+The console example keeps its session workflow open for later inputs. Disconnecting a client or stopping a worker leaves it open. Send `POST /api/sessions/SESSION_ID/close` to discard queued inputs, deny pending approvals and finish after the active turn. To cancel the active work instead, cancel the workflow through Temporal Web or the CLI.
+
 The Agent Harness example retains the checkpoint between turns. After 20 completed turns, it continues as a new workflow run. It carries queued turns and approval decisions into that run, along with the trace. A pending tool approval finishes before that boundary.
 
 Continue-as-New limits the number of events in each Temporal run. It does not shrink the Pi checkpoint or the retained trace. Pi compaction limits the context sent to the model. You still need a retention policy for archived state and traces.

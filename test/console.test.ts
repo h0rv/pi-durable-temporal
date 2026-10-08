@@ -428,3 +428,89 @@ it("remembers exact bash calls across worker replacement and Continue-as-New", a
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 	}
 }, 60_000);
+
+it("removes approvals when a child fails and rejects its decision during the next turn", async () => {
+	const directory = await mkdtemp(join(root, "failed-approval-"));
+	const dataConverter = localDataConverter(join(directory, "payloads"));
+	const client = new Client({ connection: env.client.connection, dataConverter });
+	const queue = randomUUID();
+	let effects = 0;
+	const worker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: queue,
+		workflowBundle: bundle,
+		dataConverter,
+		activities: {
+			async piModel(request: ModelRequest) {
+				if (request.context.messages.some((message) => message.role === "toolResult"))
+					return fauxAssistantMessage("42");
+				return fauxAssistantMessage(fauxToolCall("calculate", { operation: "multiply", a: 7, b: 6 }), {
+					stopReason: "toolUse",
+				});
+			},
+			async calculate() {
+				effects++;
+				return { content: [{ type: "text" as const, text: "42" }] };
+			},
+		},
+	});
+	const server = createConsole(client, root, queue);
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("No HTTP port");
+	const base = `http://127.0.0.1:${address.port}/api/`;
+	const transport = new HttpTransport({ baseUrl: base });
+	const sessionId = randomUUID();
+	try {
+		await worker.runUntil(async () => {
+			await transport.createSession({ agent_workflow_type: "piSession", session_id: sessionId });
+			const parent = client.workflow.getHandle(sessionId);
+			const pending = async () => {
+				for (let attempt = 0; attempt < 200; attempt++) {
+					const snapshot = await parent.query(status);
+					if (snapshot.pending_approvals.length) return snapshot.pending_approvals[0];
+					await new Promise((resolve) => setTimeout(resolve, 25));
+				}
+				throw new Error("Approval request did not appear");
+			};
+			await transport.submitMessage(sessionId, { type: "ask", payload: { text: "Calculate 7 times 6" } });
+			const first = await pending();
+			await client.workflow.getHandle(`${sessionId}/turn-1`).terminate("Injected child failure");
+			const frames: AgentSseFrame[] = [];
+			for await (const frame of transport.attach(sessionId, 0, AbortSignal.timeout(15_000))) frames.push(frame);
+			expect((await parent.query(status)).pending_approvals).toEqual([]);
+			expect(frames.filter((frame) => frame.event === "tool_approval_resolved").map((frame) => frame.data)).toEqual([
+				expect.objectContaining({ tool_id: first.tool_id, approved: false, reason: "Turn failed" }),
+			]);
+			await transport.submitMessage(sessionId, { type: "ask", payload: { text: "Try again" } });
+			const second = await pending();
+			expect(second.turn_number).toBe(2);
+			const stale = await fetch(`${base}approve`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ session_id: sessionId, tool_id: first.tool_id, approved: true, remember: true }),
+			});
+			expect(stale.status).toBe(404);
+			expect((await parent.query(status)).pending_approvals.map((request) => request.tool_id)).toEqual([
+				second.tool_id,
+			]);
+			expect(await parent.query(status)).toMatchObject({ approval_policy: { auto_approve_tools: [] } });
+			expect(effects).toBe(0);
+			await transport.approveTool(sessionId, second.tool_id, { approved: true });
+			for await (const _frame of transport.attach(sessionId, 0, AbortSignal.timeout(15_000))) {
+			}
+			expect(effects).toBe(1);
+			await transport.closeSession(sessionId);
+			await parent.result();
+			await Worker.runReplayHistory(
+				{ workflowBundle: bundle, dataConverter },
+				await parent.fetchHistory(),
+				sessionId,
+			);
+		});
+	} finally {
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await rm(directory, { recursive: true, force: true });
+	}
+}, 60_000);

@@ -2,6 +2,7 @@ import type { AssistantMessage, AssistantMessageEventStream, Models } from "@ear
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { Context, getClient } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
+import { withHeartbeat } from "./heartbeat.js";
 import type { DeferredRequest, ModelProgress, ModelRequest, ProgressTarget } from "./types.js";
 
 export type { PiCheckpoint } from "./state.js";
@@ -53,25 +54,32 @@ export function createModelActivities(models: Models) {
 	};
 	return {
 		piModel: (request: ModelRequest) =>
-			complete(
-				models.streamSimple(resolve(request.model), request.context, {
-					...request.options,
-					maxRetries: request.options.maxRetries ?? 0,
-					signal: Context.current().cancellationSignal,
-				}),
-				request.progress,
+			withHeartbeat(() =>
+				complete(
+					models.streamSimple(resolve(request.model), request.context, {
+						...request.options,
+						signal: Context.current().cancellationSignal,
+					}),
+					request.progress,
+				),
 			),
 		piFetchDeferred: async (request: DeferredRequest) =>
-			checked(
-				await models.fetchDeferred(resolve(request.model), request.handle, {
-					wait: request.wait,
+			withHeartbeat(async () =>
+				checked(
+					await models.fetchDeferred(resolve(request.model), request.handle, {
+						...request.options,
+						wait: request.wait,
+						signal: Context.current().cancellationSignal,
+					}),
+				),
+			),
+		piCancelDeferred: (request: DeferredRequest) =>
+			withHeartbeat(() =>
+				models.cancelDeferred(resolve(request.model), request.handle, {
+					...request.options,
 					signal: Context.current().cancellationSignal,
 				}),
 			),
-		piCancelDeferred: (request: DeferredRequest) =>
-			models.cancelDeferred(resolve(request.model), request.handle, {
-				signal: Context.current().cancellationSignal,
-			}),
 	};
 }
 

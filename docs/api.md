@@ -55,17 +55,17 @@ Pass `activities` to your Temporal worker. Keep providers and credentials on the
 
 See [state](state.md) for checkpoint use and retention.
 
-`createToolActivities` supports environment operations such as filesystem access and shell commands. It does not expose live Pi session operations to an activity. Tools that call `api.commit`, create tasks or access conversations must run in the workflow and delegate their external work to activities.
+`createToolActivities` supports environment operations such as filesystem access and shell commands. It forwards output, diagnostics and details to Pi. Configure [external payload storage](configuration.md#store-session-data-outside-temporal) for large reports. Reports stay in worker memory until the activity finishes. Pi's output window bounds built-in bash output, but custom tools must bound their own output. It does not expose live Pi session operations to an activity. Tools that call `api.commit`, create tasks or access conversations must run in the workflow and delegate their external work to activities.
 
-The optional `@h0rv/pi-durable-temporal/agent-harness` module exports `createAgentTrace` for model/tool events and approvals. It also exports `createObservableState` for state snapshots and patches. You supply the event publisher and approval evaluator. See [the console example](../examples/agent-harness/workflows.ts).
+The optional `@h0rv/pi-durable-temporal/agent-harness` module exports `createAgentTrace` for model/tool events and approvals. It also exports `createObservableState` for state snapshots and patches. You supply the event publisher. Approvals require an explicit `approvalMode` of `manual` or `auto`. See [the console example](../examples/agent-harness/workflows.ts).
 
 `ApprovalDecision` accepts `remember: true`. By default, it approves later calls to the same tool for the session. Add `rememberScope: "call"` to remember only that tool and its exact arguments. The console retains these decisions across turns and Continue-as-New.
 
-Model activities default to a five-minute timeout and three attempts. Retryable Pi provider errors become Temporal activity failures. Pi's separate retry loop is disabled by default in `runTemporalAgent` and `runTemporalTurn`.
+Model activities default to a five-minute timeout and one attempt. Pi retains its retry policy, response hooks and usage accounting. Set additional Temporal activity attempts explicitly if needed.
 
 Tool activities default to one attempt. Set a retry policy in `ActivityOptions` for tools that can safely repeat. Replay reuses completed activity results. An interrupted activity can run again, so its side effects must tolerate repeated attempts. Use the workflow ID and activity ID as a stable key to record which effects have already completed.
 
-Workflow cancellation cancels pending activities. Cancelling a Pi tool also cancels its activity. `runTemporalAgent` fails if Pi ends the submission without an answer. With `openTemporalHarness`, you can inspect the submission status yourself.
+Model activities heartbeat by default. For tools created with `createToolActivities`, set `heartbeatTimeout` in `temporalTool` options so the worker receives cancellation while the tool runs. Custom activities must send their own heartbeats. Workflow cancellation cancels pending activities. Cancelling a Pi tool also cancels its activity. `runTemporalAgent` fails if Pi ends the submission without an answer. With `openTemporalHarness`, you can inspect the submission status yourself.
 
 ## Execution
 

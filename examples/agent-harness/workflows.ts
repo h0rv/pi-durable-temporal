@@ -41,7 +41,7 @@ export async function piAgent(input: {
 				tools: coding
 					.snapshot()
 					.tools()
-					.map(({ tool }) => temporalTool(tool)),
+					.map(({ tool }) => temporalTool(tool, { heartbeatTimeout: "10 seconds" })),
 			}),
 		);
 	}
@@ -130,7 +130,7 @@ export async function piAgent(input: {
 		createAgentTrace({
 			model: selectedModel.id,
 			publish,
-			approvalMode: input.options?.approvalMode,
+			approvalMode: input.options?.approvalMode ?? "manual",
 			allowedTools: input.allowedTools,
 			allowedCalls: input.allowedCalls,
 			evaluate: approvalActivity.evaluateApproval,

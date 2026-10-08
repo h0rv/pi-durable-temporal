@@ -41,6 +41,8 @@ The server exposes `POST /api/approve` with the same fields as Temporal's publis
 
 A duplicate decision returns HTTP 409. An unknown pending tool returns 404. Denial blocks the tool activity and returns a tool error to Pi. Closing the session denies pending tools and discards queued turns. Human decisions appear as `tool_approval_resolved` events. The automatic decisions pane only shows evaluator results.
 
+Sessions stay open when clients disconnect or workers stop. Send `POST /api/sessions/SESSION_ID/close` to finish after the active turn. Closing does not cancel that turn. Use Temporal Web or the CLI to cancel active work.
+
 ## Automatic approval
 
 Run `npm run example:e2e`. It creates an automatic session and asks Pi to multiply 7 by 6, then add 8. The evaluator allows pure calculator calls with operands between -100 and 100. Other arguments require a human decision. An evaluator failure also requires a human decision.

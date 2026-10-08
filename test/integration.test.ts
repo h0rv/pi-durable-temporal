@@ -418,6 +418,8 @@ it("routes deferred fetch and cancellation through worker activities", async () 
 				fetchDeferred: (_model, request, options) => {
 					expect(request.id).toBe(handle.id);
 					expect(options?.wait).toBe(1000);
+					expect(options?.headers).toEqual({ "x-deferred": "fetch" });
+					expect(options?.timeoutMs).toBe(1234);
 					fetched++;
 					const events = new AssistantMessageEventStream();
 					events.push({
@@ -427,8 +429,10 @@ it("routes deferred fetch and cancellation through worker activities", async () 
 					});
 					return events;
 				},
-				cancelDeferred: async (_model, request) => {
+				cancelDeferred: async (_model, request, options) => {
 					expect(request.id).toBe(handle.id);
+					expect(options?.headers).toEqual({ "x-deferred": "cancel" });
+					expect(options?.env).toEqual({ PI_REGION: "test" });
 					cancelled++;
 				},
 			},
@@ -489,9 +493,15 @@ it("streams bounded tool output across activity retries", async () => {
 		const { result, progress } = await handle.result();
 		expect(
 			result.context.messages.find((message: { role: string }) => message.role === "toolResult").content,
-		).toEqual([{ type: "text", text: "bbbbbbbbbb" }]);
+		).toEqual([
+			{ type: "text", text: "bbbbbbbbbb" },
+			expect.objectContaining({ text: expect.stringContaining("Output truncated to its end") }),
+		]);
 		expect(new Set(progress.map((value: { attempt: number }) => value.attempt))).toEqual(new Set([1, 2]));
-		expect(progress.at(-1).output).toBe("bbbbbbbbbb");
+		expect(progress.flatMap((event: { reports?: unknown[] }) => event.reports ?? []).at(-1)).toEqual({
+			type: "output",
+			chunk: "bbbbbbbbbb",
+		});
 		await Worker.runReplayHistory({ workflowBundle: bundle }, await handle.fetchHistory(), queue);
 	});
 }, 30_000);
@@ -638,6 +648,116 @@ it.each(["terminate", "mixed"])(
 			await Worker.runReplayHistory({ workflowBundle: bundle }, await handle.fetchHistory(), queue);
 			expect(models).toBe(mode === "terminate" ? 1 : 2);
 			expect(tools).toBe(2);
+		});
+	},
+	30_000,
+);
+
+it("forwards native provider options and keeps worker callbacks and credentials out of payloads", async () => {
+	let options: unknown;
+	let context: unknown;
+	const models = createModels();
+	models.setProvider(
+		createProvider({
+			id: model.provider,
+			models: [model],
+			auth: { apiKey: { name: "test", resolve: async () => ({ auth: {} }) } },
+			api: {
+				stream: () => {
+					throw new Error("Use streamSimple");
+				},
+				streamSimple: (_model, requestContext, requestOptions) => {
+					context = requestContext;
+					options = requestOptions;
+					const events = new AssistantMessageEventStream();
+					events.end(answer([{ type: "text", text: "Done" }]));
+					return events;
+				},
+			},
+		}),
+	);
+	const queue = randomUUID();
+	const worker = await Worker.create({
+		connection: env.nativeConnection,
+		taskQueue: queue,
+		workflowBundle: bundle,
+		activities: createModelActivities(models),
+	});
+	await worker.runUntil(async () => {
+		const handle = await env.client.workflow.start("providerOptions", {
+			workflowId: queue,
+			taskQueue: queue,
+			workflowExecutionTimeout: "10 seconds",
+		});
+		await handle.result();
+		expect(context).toEqual({ messages: [{ role: "user", content: "Options", timestamp: 0 }] });
+		expect(options).toMatchObject({
+			headers: { "x-route": "test", "x-default": null },
+			env: { PI_PROVIDER_REGION: "test" },
+			samplingParams: { top_p: 0.5 },
+			metadata: { label: "test" },
+		});
+		expect((options as Record<string, unknown>).apiKey).toBeUndefined();
+		expect((options as Record<string, unknown>).onPayload).toBeUndefined();
+		await Worker.runReplayHistory({ workflowBundle: bundle }, await handle.fetchHistory(), queue);
+	});
+}, 30_000);
+
+it.each([false, true])(
+	"preserves native retry hooks and usage unless Temporal retries are explicit (%s)",
+	async (temporalRetry) => {
+		let calls = 0;
+		const attempts: number[] = [];
+		const models = createModels();
+		models.setProvider(
+			createProvider({
+				id: model.provider,
+				models: [model],
+				auth: { apiKey: { name: "test", resolve: async () => ({ auth: {} }) } },
+				api: {
+					stream: () => {
+						throw new Error("Use streamSimple");
+					},
+					streamSimple: () => {
+						const events = new AssistantMessageEventStream();
+						events.end(
+							++calls === 1
+								? { ...answer([], "error"), errorMessage: "429 Too Many Requests" }
+								: answer([{ type: "text", text: "Done" }]),
+						);
+						return events;
+					},
+				},
+			}),
+		);
+		const activities = createModelActivities(models);
+		const queue = randomUUID();
+		const worker = await Worker.create({
+			connection: env.nativeConnection,
+			taskQueue: queue,
+			workflowBundle: bundle,
+			activities: {
+				...activities,
+				piModel: async (request: ModelRequest) => {
+					attempts.push(Context.current().info.attempt);
+					return activities.piModel(request);
+				},
+			},
+		});
+		await worker.runUntil(async () => {
+			const handle = await env.client.workflow.start("nativeRetry", {
+				workflowId: queue,
+				taskQueue: queue,
+				args: [temporalRetry],
+				workflowExecutionTimeout: "10 seconds",
+			});
+			const result = await handle.result();
+			expect(calls).toBe(2);
+			expect(attempts).toEqual(temporalRetry ? [1, 2] : [1, 1]);
+			expect(result.responses).toEqual(temporalRetry ? ["stop"] : ["error", "stop"]);
+			const usage = Object.values(result.usage.models) as { totalTokens: number }[];
+			expect(usage.reduce((total, model) => total + model.totalTokens, 0)).toBe(temporalRetry ? 2 : 4);
+			await Worker.runReplayHistory({ workflowBundle: bundle }, await handle.fetchHistory(), queue);
 		});
 	},
 	30_000,

@@ -50,15 +50,15 @@
 		"@temporalio/activity": "1.24.0",
 		"@temporalio/common": "1.24.0",
 		"@temporalio/workflow": "1.24.0",
-		"@ungap/structured-clone": "1.4.0",
-		"@temporalio/agent-harness-client": "0.1.0"
+		"@ungap/structured-clone": "1.4.0"
 	},
 	"peerDependencies": {
 		"@earendil-works/chord": "1.0.4",
 		"@earendil-works/pi-ai": "1.0.4",
 		"@earendil-works/pi-durable": "1.0.4",
 		"protobufjs": "8.8.0",
-		"typebox": "1.3.27"
+		"typebox": "1.3.27",
+		"@temporalio/agent-harness-client": "0.1.0"
 	},
 	"devDependencies": {
 		"@aws-sdk/client-s3": "3.1147.0",
@@ -104,5 +104,10 @@
 	"publishConfig": {
 		"access": "public",
 		"registry": "https://npm.pkg.github.com"
+	},
+	"peerDependenciesMeta": {
+		"@temporalio/agent-harness-client": {
+			"optional": true
+		}
 	}
 }

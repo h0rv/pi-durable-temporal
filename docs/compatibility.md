@@ -10,11 +10,13 @@ A tool that needs `api.commit`, conversations or child tasks should stay in the 
 
 Pi turns a thrown tool error into a tool result for the model. It also supports blocked tools, rewritten results and termination requests. The adapter returns activity results to that same Pi tool path. Exhausted model retries return the original provider error response to Pi for classification.
 
-Temporal model activities use three attempts by default. The helper disables Pi's separate retry loop. If you want Pi's retry hooks and attempt usage accounting, set the model activity to one attempt and enable Pi retries in `settings.retry`. With Temporal retries, Pi sees only the final attempt's response and usage.
+Temporal model activities use one attempt by default. Pi's retry policy, response hooks and usage accounting remain active. If you configure additional Temporal activity attempts, Pi sees only the final attempt's response and usage.
 
 ## Progress
 
 Pass `{ stream: true }` as the third argument to `createTemporalModels` or `temporalTool` to receive progress signals. `onProgress` receives the activity attempt number. Partial output is provisional. A retried activity starts reporting again, and the final activity result is authoritative.
+
+With one activity attempt, streamed tool reports update Pi as they arrive. With additional Temporal attempts, `onProgress` receives provisional reports and Pi receives only the final attempt's reports. Without streaming, tool details are applied when the activity finishes.
 
 Progress signals add events and payloads to workflow history. Default model calls return a completed response without those signals. Deferred model requests use `piFetchDeferred` and `piCancelDeferred` activities.
 
