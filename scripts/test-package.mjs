@@ -4,12 +4,10 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
 
 const run = promisify(execFile);
 const root = process.cwd();
 const directory = await mkdtemp(join(tmpdir(), "pi-package-"));
-const managed = await mkdtemp(join(tmpdir(), "pi-extension-package-"));
 try {
 	const { stdout } = await run("npm", ["pack", "--json", "--pack-destination", directory], { cwd: root });
 	const [archive] = JSON.parse(stdout);
@@ -66,22 +64,7 @@ await worker.runUntil(async()=>{const handle=await client.workflow.start("smoke"
 	);
 	const result = await run(process.execPath, ["smoke.mjs"], { cwd: directory, timeout: 90_000, maxBuffer: 4_000_000 });
 	assert(!result.stderr.includes("DeterminismViolationError"));
-	await writeFile(join(managed, "package.json"), JSON.stringify({ private: true, type: "module" }));
-	await run(
-		"npm",
-		["install", "--ignore-scripts", "--omit=dev", "--legacy-peer-deps", join(directory, archive.filename)],
-		{ cwd: managed },
-	);
-	const loaded = await discoverAndLoadExtensions(
-		[join(managed, "node_modules/@h0rv/pi-durable-temporal/dist/pi-extension.js")],
-		managed,
-		managed,
-	);
-	assert.deepEqual(loaded.errors, []);
-	assert.equal(loaded.extensions.length, 1);
 	console.log(`Packed package passed a workflow run in a fresh project (${archive.size} bytes).`);
-	console.log("Packed extension loaded with Pi's managed-install settings.");
 } finally {
 	await rm(directory, { recursive: true, force: true });
-	await rm(managed, { recursive: true, force: true });
 }

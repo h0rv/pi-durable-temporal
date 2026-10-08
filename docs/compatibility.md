@@ -22,9 +22,7 @@ Progress signals add events and payloads to workflow history. Default model call
 
 The example console supports multiple browser connections to a session. Turns are queued and the trace can be read after reconnecting.
 
-Pi has an experimental native client/server implementation with multiple presentation attachments. Its coding-agent client and server are source-only and excluded from released npm packages and standalone binaries. The installed Pi 1.0.4 TUI cannot connect directly to this Temporal integration.
-
-The released Pi extension API works without that experimental server. Load this repo's [TUI extension](tui.md) to send prompts through the console API. It uses the official Agent Harness client for reconnects and approvals, with Pi's native message styling and dialogs.
+Pi 1.0.4's stock TUI has no supported remote execution backend hook. This package does not change its rendering, input handling or commands.
 
 ## Deployment
 

@@ -42,23 +42,9 @@ See [the workflow and worker example](docs/api.md). Use [checkpoints](docs/state
 - [MCP and code mode](examples/mcp/README.md). Run Pi's sandbox with the reference MCP filesystem server.
 - [Approvals and state](examples/agent-harness/README.md). Human decisions, automatic evaluations, and a visible plan.
 
-## Pi TUI
-
-Start the worker with a workspace and model credentials:
-
-```sh
-PI_WORKSPACE_DIRECTORY=/absolute/path PI_PROVIDER=codex npm run dev
-```
-
-In another terminal, use Pi's normal TUI:
-
-```sh
-pi --extension ./src/pi-extension.ts --temporal
-```
-
-Pi opens an approval dialog for tool calls. Always approve remembers the exact call for the session. `/temporal open` opens the agent console. `/temporal workflow` opens Temporal Web. See [TUI setup](docs/tui.md) for reconnecting and client limits.
-
 ## Limits
+
+Pi's stock TUI does not expose a remote execution backend in the supported release. This package integrates Pi Durable with Temporal.
 
 Hooks must follow Temporal's replay rules. Interrupted activities can repeat. Tools must prevent duplicate side effects.
 
