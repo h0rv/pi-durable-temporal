@@ -8,5 +8,6 @@
 		"verbatimModuleSyntax": true,
 		"noEmit": true
 	},
-	"include": ["src", "test", "examples"]
+	"include": ["src", "test", "examples"],
+	"exclude": ["examples/native-client"]
 }

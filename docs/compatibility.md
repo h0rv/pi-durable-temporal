@@ -26,6 +26,8 @@ The example console supports multiple browser connections to a session. Turns ar
 
 Pi 1.0.4's stock TUI has no supported remote execution backend hook. This package does not change its rendering, input handling or commands.
 
+The [native client example](../examples/native-client/README.md) connects Pi's source-only experimental client TUI to Temporal through its upstream `AgentController` and `Transcript` services.
+
 ## Deployment
 
 Local recovery and replay are tested. Remote connection settings are tested, but a Temporal Cloud deployment has not been run.

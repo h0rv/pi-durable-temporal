@@ -23,6 +23,7 @@ Use `createTemporalModels` for model requests and `temporalTool` for tools in yo
 - [State and checkpoints](docs/state.md)
 - [Configuration](docs/configuration.md)
 - [Compatibility and retry behavior](docs/compatibility.md)
+- [Pi's experimental client TUI](examples/native-client/README.md)
 - [Examples](docs/examples.md)
 
 ## Development

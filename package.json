@@ -44,7 +44,13 @@
 		"test:package": "node scripts/test-package.mjs",
 		"dev": "tsx examples/dev.ts",
 		"example:coding": "tsx examples/coding/run.ts",
-		"example:mcp": "tsx examples/mcp/run.ts"
+		"example:mcp": "tsx examples/mcp/run.ts",
+		"example:client:setup": "node scripts/native-client.mjs setup",
+		"example:client": "node scripts/native-client.mjs client",
+		"example:client:server": "node scripts/native-client.mjs server",
+		"example:client:worker": "node scripts/native-client.mjs worker",
+		"example:client:test": "node scripts/native-client.mjs test",
+		"example:client:check": "node .local/pi-upstream/node_modules/typescript/bin/tsc -p examples/native-client/tsconfig.json"
 	},
 	"dependencies": {
 		"@temporalio/activity": "1.24.0",
