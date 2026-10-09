@@ -8,14 +8,11 @@ Tested locally and on Temporal Cloud, including worker restart, Continue-as-New 
 
 ## Install
 
-GitHub Packages requires a classic token with `read:packages`.
-
 ```sh
-npm login --scope=@h0rv --auth-type=legacy --registry=https://npm.pkg.github.com
 npm install @h0rv/pi-durable-temporal
 ```
 
-[GitHub Packages setup](docs/install.md).
+[Install and publishing](docs/install.md).
 
 ## Usage
 

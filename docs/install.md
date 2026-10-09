@@ -1,12 +1,15 @@
 # Install
 
-The package is published to GitHub Packages as `@h0rv/pi-durable-temporal`. GitHub requires authentication to install npm packages, including public ones. Use a classic token with `read:packages` when prompted for the password:
+Install from public npm. No token is required:
 
 ```sh
-npm login --scope=@h0rv --auth-type=legacy --registry=https://npm.pkg.github.com
 npm install @h0rv/pi-durable-temporal
 ```
 
-See [GitHub's registry instructions](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry).
+If you previously configured the `@h0rv` scope for GitHub Packages, point it to npm:
 
-CI checks Node 22 and 24. A published release runs those checks before publishing to GitHub Packages. The release tag must match the package version.
+```sh
+npm config set @h0rv:registry https://registry.npmjs.org
+```
+
+CI checks Node 22 and 24. The Release workflow runs those checks before publishing to npm. Run it manually from GitHub Actions, or publish a GitHub release whose tag matches the package version. Publishing uses the repository's `NPM_TOKEN` secret.
