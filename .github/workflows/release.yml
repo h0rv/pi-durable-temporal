@@ -28,3 +28,5 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: mkdir -p .local && npm pack --pack-destination .local
       - run: npm publish .local/*.tgz --ignore-scripts --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
