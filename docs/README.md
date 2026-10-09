@@ -2,7 +2,7 @@
 
 Start with the [repository README](../README.md).
 
-- [Install](install.md). Release archive and GitHub Packages.
+- [Install](install.md). Public npm package and publishing.
 - [API](api.md). Connect a Pi harness to a Temporal worker.
 - [State](state.md). Replay, checkpoints and long sessions.
 - [Configuration](configuration.md). Payload storage and remote connections.

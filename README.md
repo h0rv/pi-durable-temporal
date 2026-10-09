@@ -8,6 +8,8 @@ Tested locally and on Temporal Cloud, including worker restart, Continue-as-New 
 
 ## Install
 
+Available on [npm](https://www.npmjs.com/package/@h0rv/pi-durable-temporal).
+
 ```sh
 npm install @h0rv/pi-durable-temporal
 ```
